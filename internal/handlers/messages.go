@@ -162,8 +162,9 @@ func (h *MessagesHandler) HandleMessages(w http.ResponseWriter, r *http.Request)
 		blocks := msg.ContentBlocks()
 		content := extractTextFromBlocks(blocks)
 		mc := router.MessageContent{
-			Role:    msg.Role,
-			Content: content,
+			Role:         msg.Role,
+			Content:      content,
+			IsToolResult: hasOnlyToolResults(blocks),
 		}
 		routerMessages = append(routerMessages, mc)
 		tokenMessages = append(tokenMessages, token.MessageContent{
@@ -180,15 +181,26 @@ func (h *MessagesHandler) HandleMessages(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Route to appropriate model.
-	// For streaming, use faster models to minimize TTFT (time-to-first-token)
+	// Priority: 1) direct model_id match (Claude Code model mapping),
+	// 2) streaming scenario routing (fast TTFT), 3) content-based scenario detection.
 	var routeResult router.RouteResult
-	if isStreaming {
+	if primary, fallbacks, ok := h.modelRouter.FindModelByID(anthropicReq.Model); ok {
+		routeResult = router.RouteResult{
+			Primary:   primary,
+			Fallbacks: fallbacks,
+			Scenario:  "direct",
+		}
+		h.logger.Info("routing by model id",
+			"request_model", anthropicReq.Model,
+			"routed_model", primary.ModelID,
+		)
+	} else if isStreaming && !h.config.EnableStreamingScenarioRouting {
 		routeResult = h.modelRouter.RouteForStreaming(routerMessages, tokenCount)
 	} else {
-		var err error
-		routeResult, err = h.modelRouter.Route(routerMessages, tokenCount)
-		if err != nil {
-			h.sendError(w, http.StatusInternalServerError, "routing failed", err)
+		var routeErr error
+		routeResult, routeErr = h.modelRouter.Route(routerMessages, tokenCount)
+		if routeErr != nil {
+			h.sendError(w, http.StatusInternalServerError, "routing failed", routeErr)
 			return
 		}
 	}
@@ -238,8 +250,13 @@ func (h *MessagesHandler) handleStreaming(
 	}
 
 	// Start heartbeat to keep connection alive while waiting for upstream.
-	// Claude Code times out after ~6 seconds of no data, so we send pings every 3 seconds
-	// (frequent enough to prevent timeout, not so frequent as to cause overhead).
+	// Send one immediately, then every 3 seconds.
+	// Immediate heartbeat prevents client timeout before the first ticker tick.
+	_, _ = fmt.Fprintf(w, ":keepalive\n\n")
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+
 	heartbeatDone := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(3 * time.Second)
@@ -555,6 +572,19 @@ func extractTextFromBlocks(blocks []types.ContentBlock) string {
 		}
 	}
 	return content
+}
+
+// hasOnlyToolResults checks if all content blocks are tool_result.
+func hasOnlyToolResults(blocks []types.ContentBlock) bool {
+	if len(blocks) == 0 {
+		return false
+	}
+	for _, block := range blocks {
+		if block.Type != "tool_result" {
+			return false
+		}
+	}
+	return true
 }
 
 // sendError sends an error response in Anthropic format.

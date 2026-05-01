@@ -4,6 +4,7 @@ package router
 
 import (
 	"fmt"
+	"strings"
 
 	"oc-go-cc/internal/config"
 )
@@ -23,6 +24,42 @@ type RouteResult struct {
 	Primary   config.ModelConfig
 	Fallbacks []config.ModelConfig
 	Scenario  Scenario
+}
+
+// FindModelByID looks up a model config by its model_id across all scenarios.
+// Also recognizes Claude Code model variants (haiku/sonnet/opus) and maps them
+// to configured scenarios: haiku→background, sonnet→default, opus→complex.
+func (r *ModelRouter) FindModelByID(modelID string) (config.ModelConfig, []config.ModelConfig, bool) {
+	if modelID == "" {
+		return config.ModelConfig{}, nil, false
+	}
+
+	// 1. Direct model_id match across configured scenarios (priority order).
+	priority := []string{"default", "complex", "think", "long_context", "background", "fast"}
+	for _, scenario := range priority {
+		if mc, ok := r.config.Models[scenario]; ok && mc.ModelID == modelID {
+			return mc, r.config.Fallbacks[scenario], true
+		}
+	}
+
+	// 2. Claude Code variant mapping — haiku→cheap, sonnet→balanced, opus→capable.
+	lower := strings.ToLower(modelID)
+	var variantScenario string
+	switch {
+	case strings.Contains(lower, "haiku"):
+		variantScenario = "background"
+	case strings.Contains(lower, "opus"):
+		variantScenario = "complex"
+	case strings.Contains(lower, "sonnet"):
+		variantScenario = "default"
+	default:
+		return config.ModelConfig{}, nil, false
+	}
+	if mc, ok := r.config.Models[variantScenario]; ok {
+		return mc, r.config.Fallbacks[variantScenario], true
+	}
+
+	return config.ModelConfig{}, nil, false
 }
 
 // Route determines which model to use for a request.

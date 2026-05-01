@@ -28,8 +28,9 @@ type ScenarioResult struct {
 
 // MessageContent represents a single message in a conversation.
 type MessageContent struct {
-	Role    string
-	Content string
+	Role         string
+	Content      string
+	IsToolResult bool
 }
 
 // DetectScenario analyzes a request to determine which model to use.
@@ -103,7 +104,7 @@ func hasComplexPattern(messages []MessageContent) bool {
 	}
 
 	for _, msg := range messages {
-		if msg.Role == "system" || msg.Role == "user" {
+		if !msg.IsToolResult && (msg.Role == "system" || msg.Role == "user") {
 			lower := strings.ToLower(msg.Content)
 			for _, kw := range complexKeywords {
 				if strings.Contains(lower, kw) {
@@ -124,7 +125,7 @@ func hasThinkingPattern(messages []MessageContent) bool {
 	}
 
 	for _, msg := range messages {
-		if msg.Role == "system" || msg.Role == "user" {
+		if !msg.IsToolResult && (msg.Role == "system" || msg.Role == "user") {
 			lower := strings.ToLower(msg.Content)
 			for _, kw := range thinkingKeywords {
 				if strings.Contains(lower, kw) {
@@ -132,7 +133,7 @@ func hasThinkingPattern(messages []MessageContent) bool {
 				}
 			}
 		}
-		// Check for thinking content blocks
+		// Check for thinking content blocks (assistant messages have these)
 		if strings.Contains(msg.Content, "antThinking") {
 			return true
 		}
@@ -141,10 +142,8 @@ func hasThinkingPattern(messages []MessageContent) bool {
 }
 
 // hasBackgroundPattern checks for VERY simple background tasks.
-// IMPORTANT: This should be conservative - returns true only for truly trivial requests.
-// If there's any mention of tools, functions, or writing, it's NOT background.
+// Skips tool_result messages (file contents / command output are not user intent).
 func hasBackgroundPattern(messages []MessageContent) bool {
-	// If ANY tool keywords appear, it's NOT a background task
 	toolBlockers := []string{
 		"tool", "function", "execute", "run command",
 		"write", "edit", "create", "delete", "remove",
@@ -152,6 +151,9 @@ func hasBackgroundPattern(messages []MessageContent) bool {
 	}
 
 	for _, msg := range messages {
+		if msg.IsToolResult {
+			continue
+		}
 		lower := strings.ToLower(msg.Content)
 		for _, kw := range toolBlockers {
 			if strings.Contains(lower, kw) {
@@ -160,7 +162,6 @@ func hasBackgroundPattern(messages []MessageContent) bool {
 		}
 	}
 
-	// Only truly simple operations are background tasks
 	backgroundKeywords := []string{
 		"list directory", "ls -", "dir",
 		"show file", "view file", "cat file",
@@ -169,6 +170,9 @@ func hasBackgroundPattern(messages []MessageContent) bool {
 	}
 
 	for _, msg := range messages {
+		if msg.IsToolResult {
+			continue
+		}
 		lower := strings.ToLower(msg.Content)
 		for _, kw := range backgroundKeywords {
 			if strings.Contains(lower, kw) {
