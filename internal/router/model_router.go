@@ -38,7 +38,14 @@ func (r *ModelRouter) FindModelByID(modelID string) (config.ModelConfig, []confi
 		return config.ModelConfig{}, nil, false
 	}
 
-	// 1. Direct model_id match across configured models, including custom keys.
+	// 1. Claude Code env-var mapping is configuration-driven. When the requested
+	// model matches one of Claude Code's configured aliases, reuse the scenario's
+	// tuning/fallbacks but swap in the configured target model name.
+	if mc, fallbacks, ok := r.resolveClaudeCodeEnvModel(modelID); ok {
+		return mc, fallbacks, true
+	}
+
+	// 2. Direct model_id match across configured models, including custom keys.
 	priority := []string{"default", "complex", "think", "long_context", "background", "fast"}
 	for _, scenario := range priority {
 		if mc, ok := r.config.Models[scenario]; ok && matchesRequestedModelID(mc.ModelID, modelID) {
@@ -60,7 +67,7 @@ func (r *ModelRouter) FindModelByID(modelID string) (config.ModelConfig, []confi
 		}
 	}
 
-	// 2. Claude Code alias/env-var mapping.
+	// 3. Legacy Claude variant-name fallback.
 	variantScenario := r.resolveClaudeCodeScenario(modelID)
 	if variantScenario == "" {
 		return config.ModelConfig{}, nil, false
@@ -72,21 +79,40 @@ func (r *ModelRouter) FindModelByID(modelID string) (config.ModelConfig, []confi
 	return config.ModelConfig{}, nil, false
 }
 
+func (r *ModelRouter) resolveClaudeCodeEnvModel(modelID string) (config.ModelConfig, []config.ModelConfig, bool) {
+	requestedBase, requestedContext := normalizeRequestedModelID(modelID)
+	if requestedBase == "" {
+		return config.ModelConfig{}, nil, false
+	}
+
+	for _, mapping := range claudeCodeEnvMappings() {
+		alias := os.Getenv(mapping.EnvName)
+		if alias == "" || !matchesRequestedModelID(alias, modelID) {
+			continue
+		}
+
+		scenario := mapping.Scenario
+		if requestedContext == scenarioLongContext {
+			scenario = scenarioLongContext
+		}
+
+		template, ok := r.config.Models[scenario]
+		if !ok {
+			return config.ModelConfig{}, nil, false
+		}
+
+		resolved := template
+		resolved.ModelID = requestedBase
+		return resolved, r.config.Fallbacks[scenario], true
+	}
+
+	return config.ModelConfig{}, nil, false
+}
+
 func (r *ModelRouter) resolveClaudeCodeScenario(modelID string) string {
 	requestedBase, _ := normalizeRequestedModelID(modelID)
 
-	envMappings := []struct {
-		EnvName  string
-		Scenario string
-	}{
-		{EnvName: "ANTHROPIC_MODEL", Scenario: "default"},
-		{EnvName: "ANTHROPIC_DEFAULT_HAIKU_MODEL", Scenario: "background"},
-		{EnvName: "ANTHROPIC_DEFAULT_SONNET_MODEL", Scenario: "default"},
-		{EnvName: "ANTHROPIC_DEFAULT_OPUS_MODEL", Scenario: "complex"},
-		{EnvName: "CLAUDE_CODE_SUBAGENT_MODEL", Scenario: "background"},
-	}
-
-	for _, mapping := range envMappings {
+	for _, mapping := range claudeCodeEnvMappings() {
 		alias := os.Getenv(mapping.EnvName)
 		if alias == "" || !matchesRequestedModelID(alias, modelID) {
 			continue
@@ -104,6 +130,22 @@ func (r *ModelRouter) resolveClaudeCodeScenario(modelID string) string {
 		return "default"
 	default:
 		return ""
+	}
+}
+
+func claudeCodeEnvMappings() []struct {
+	EnvName  string
+	Scenario string
+} {
+	return []struct {
+		EnvName  string
+		Scenario string
+	}{
+		{EnvName: "ANTHROPIC_MODEL", Scenario: "default"},
+		{EnvName: "ANTHROPIC_DEFAULT_HAIKU_MODEL", Scenario: "background"},
+		{EnvName: "ANTHROPIC_DEFAULT_SONNET_MODEL", Scenario: "default"},
+		{EnvName: "ANTHROPIC_DEFAULT_OPUS_MODEL", Scenario: "complex"},
+		{EnvName: "CLAUDE_CODE_SUBAGENT_MODEL", Scenario: "background"},
 	}
 }
 

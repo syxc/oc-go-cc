@@ -65,8 +65,10 @@ func TestFindModelByID_UsesClaudeCodeEnvMappingForOpusSlot(t *testing.T) {
 
 	router := NewModelRouter(&config.Config{
 		Models: map[string]config.ModelConfig{
-			"complex": {
-				ModelID: "glm-5.1",
+			"long_context": {
+				ModelID:         "minimax-m2.5",
+				MaxTokens:       16384,
+				ReasoningEffort: "max",
 			},
 		},
 	})
@@ -75,8 +77,14 @@ func TestFindModelByID_UsesClaudeCodeEnvMappingForOpusSlot(t *testing.T) {
 	if !ok {
 		t.Fatal("FindModelByID() = not found, want found")
 	}
-	if model.ModelID != "glm-5.1" {
-		t.Fatalf("ModelID = %q, want %q", model.ModelID, "glm-5.1")
+	if model.ModelID != "deepseek-v4-pro" {
+		t.Fatalf("ModelID = %q, want %q", model.ModelID, "deepseek-v4-pro")
+	}
+	if model.MaxTokens != 16384 {
+		t.Fatalf("MaxTokens = %d, want %d", model.MaxTokens, 16384)
+	}
+	if model.ReasoningEffort != "max" {
+		t.Fatalf("ReasoningEffort = %q, want %q", model.ReasoningEffort, "max")
 	}
 }
 
@@ -86,7 +94,9 @@ func TestFindModelByID_UsesClaudeCodeEnvMappingForHaiku(t *testing.T) {
 	router := NewModelRouter(&config.Config{
 		Models: map[string]config.ModelConfig{
 			"background": {
-				ModelID: "qwen3.5-plus",
+				ModelID:     "deepseek-v4-flash",
+				Temperature: 0.3,
+				MaxTokens:   2048,
 			},
 		},
 	})
@@ -95,7 +105,69 @@ func TestFindModelByID_UsesClaudeCodeEnvMappingForHaiku(t *testing.T) {
 	if !ok {
 		t.Fatal("FindModelByID() = not found, want found")
 	}
+	if model.ModelID != "deepseek-v4-flash" {
+		t.Fatalf("ModelID = %q, want %q", model.ModelID, "deepseek-v4-flash")
+	}
+	if model.Temperature != 0.3 {
+		t.Fatalf("Temperature = %v, want %v", model.Temperature, 0.3)
+	}
+	if model.MaxTokens != 2048 {
+		t.Fatalf("MaxTokens = %d, want %d", model.MaxTokens, 2048)
+	}
+}
+
+func TestFindModelByID_UsesClaudeCodeEnvMappingWithoutExplicitModelConfig(t *testing.T) {
+	t.Setenv("ANTHROPIC_DEFAULT_SONNET_MODEL", "qwen3.5-plus")
+
+	router := NewModelRouter(&config.Config{
+		Models: map[string]config.ModelConfig{
+			"default": {
+				ModelID:     "deepseek-v4-pro",
+				Temperature: 0.7,
+				MaxTokens:   8192,
+			},
+		},
+	})
+
+	model, _, ok := router.FindModelByID("qwen3.5-plus")
+	if !ok {
+		t.Fatal("FindModelByID() = not found, want found")
+	}
 	if model.ModelID != "qwen3.5-plus" {
 		t.Fatalf("ModelID = %q, want %q", model.ModelID, "qwen3.5-plus")
+	}
+	if model.Temperature != 0.7 {
+		t.Fatalf("Temperature = %v, want %v", model.Temperature, 0.7)
+	}
+	if model.MaxTokens != 8192 {
+		t.Fatalf("MaxTokens = %d, want %d", model.MaxTokens, 8192)
+	}
+}
+
+func TestFindModelByID_UsesClaudeCodeSubagentMappingWithoutExplicitModelConfig(t *testing.T) {
+	t.Setenv("CLAUDE_CODE_SUBAGENT_MODEL", "qwen3.5-plus")
+
+	router := NewModelRouter(&config.Config{
+		Models: map[string]config.ModelConfig{
+			"background": {
+				ModelID:     "deepseek-v4-flash",
+				Temperature: 0.3,
+				MaxTokens:   2048,
+			},
+		},
+	})
+
+	model, _, ok := router.FindModelByID("qwen3.5-plus")
+	if !ok {
+		t.Fatal("FindModelByID() = not found, want found")
+	}
+	if model.ModelID != "qwen3.5-plus" {
+		t.Fatalf("ModelID = %q, want %q", model.ModelID, "qwen3.5-plus")
+	}
+	if model.Temperature != 0.3 {
+		t.Fatalf("Temperature = %v, want %v", model.Temperature, 0.3)
+	}
+	if model.MaxTokens != 2048 {
+		t.Fatalf("MaxTokens = %d, want %d", model.MaxTokens, 2048)
 	}
 }

@@ -46,3 +46,10 @@ Agent 在任务执行过程中发现的条目应遵循以下格式：
 - Instructions:
   - 项目常用验证命令为 `make test`，会运行带 race detector 的 Go 测试。
   - 单文件或单包验证可直接使用 `go test ./internal/router/...` 等标准 Go 命令。
+
+[Claude Code 模型映射偏好]
+- Date: 2026-05-02
+- Context: 用户在调整 Claude Code 模型变量映射时提出
+- Instructions:
+  - 当用户调整 `ANTHROPIC_MODEL`、`ANTHROPIC_DEFAULT_HAIKU_MODEL`、`ANTHROPIC_DEFAULT_SONNET_MODEL`、`ANTHROPIC_DEFAULT_OPUS_MODEL`、`CLAUDE_CODE_SUBAGENT_MODEL` 时，应尽量做到只改配置，不要求再改代码。
+  - Claude Code 模型变量映射不应被写死为固定模型集合，应允许用户按需替换模型名。
