@@ -199,7 +199,7 @@ func (h *StreamHandler) processSSELine(
 						startEvent := types.MessageEvent{
 							Type:         "content_block_start",
 							Index:        contentIndex,
-							ContentBlock: &types.ContentBlock{Type: "text", Text: " "},
+							ContentBlock: &types.ContentBlock{Type: "text", Text: ""},
 						}
 						if err := writeSSEEvent(w, startEvent); err != nil {
 							return ErrClientDisconnected
@@ -308,7 +308,7 @@ func (h *StreamHandler) processSSELine(
 			startEvent := types.MessageEvent{
 				Type:         "content_block_start",
 				Index:        contentIndex,
-				ContentBlock: &types.ContentBlock{Type: "thinking", Thinking: " "},
+				ContentBlock: &types.ContentBlock{Type: "thinking", Thinking: ""},
 			}
 			if err := writeSSEEvent(w, startEvent); err != nil {
 				return ErrClientDisconnected
