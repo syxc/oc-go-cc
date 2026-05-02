@@ -331,7 +331,7 @@ func (h *StreamHandler) processSSELine(
 	}
 
 	// Handle text content deltas
-	if choice.Delta.Content != "" {
+	if text := choice.Delta.ExtractText(); text != "" {
 		if !*contentStarted {
 			// If reasoning was already started, close it first
 			if *reasoningStarted {
@@ -358,7 +358,7 @@ func (h *StreamHandler) processSSELine(
 
 		delta := types.Delta{
 			Type: "text_delta",
-			Text: choice.Delta.Content,
+			Text: text,
 		}
 		event := types.MessageEvent{
 			Type:  "content_block_delta",

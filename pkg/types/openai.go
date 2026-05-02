@@ -28,14 +28,63 @@ type StreamOptions struct {
 }
 
 // ChatMessage represents a single message in the conversation.
+// Content supports both string (text-only) and array (multimodal: text + image_url).
 type ChatMessage struct {
-	Role             string        `json:"role"`
-	Content          string        `json:"content"`
-	ReasoningContent *string       `json:"reasoning_content,omitempty"`
-	ToolCalls        []ToolCall    `json:"tool_calls,omitempty"`
-	Name             string        `json:"name,omitempty"`
-	ToolCallID       string        `json:"tool_call_id,omitempty"`
-	CacheControl     *CacheControl `json:"cache_control,omitempty"`
+	Role             string          `json:"role"`
+	Content          json.RawMessage `json:"content"`
+	ReasoningContent *string         `json:"reasoning_content,omitempty"`
+	ToolCalls        []ToolCall      `json:"tool_calls,omitempty"`
+	Name             string          `json:"name,omitempty"`
+	ToolCallID       string          `json:"tool_call_id,omitempty"`
+	CacheControl     *CacheControl   `json:"cache_control,omitempty"`
+}
+
+// ContentPart represents a part of multimodal content (text or image).
+type ContentPart struct {
+	Type     string    `json:"type"`
+	Text     string    `json:"text,omitempty"`
+	ImageURL *ImageURL `json:"image_url,omitempty"`
+}
+
+// ImageURL represents an image URL in an OpenAI content part.
+type ImageURL struct {
+	URL string `json:"url"`
+}
+
+// NewTextContent creates a ChatMessage with plain text content.
+func NewTextContent(text string) json.RawMessage {
+	b, _ := json.Marshal(text)
+	return json.RawMessage(b)
+}
+
+// NewMultimodalContent creates a ChatMessage with multimodal content (text + images).
+func NewMultimodalContent(parts []ContentPart) json.RawMessage {
+	b, _ := json.Marshal(parts)
+	return json.RawMessage(b)
+}
+
+// ExtractText returns the text content from a ChatMessage's Content field.
+// Supports both string (text-only) and array (multimodal) formats.
+func (m *ChatMessage) ExtractText() string {
+	if len(m.Content) == 0 {
+		return ""
+	}
+	// Try as plain string first
+	var s string
+	if err := json.Unmarshal(m.Content, &s); err == nil {
+		return s
+	}
+	// Try as array of content parts — extract text from the first text part
+	var parts []ContentPart
+	if err := json.Unmarshal(m.Content, &parts); err != nil {
+		return ""
+	}
+	for _, p := range parts {
+		if p.Type == "text" && p.Text != "" {
+			return p.Text
+		}
+	}
+	return ""
 }
 
 // ToolCall represents a function call made by the model.

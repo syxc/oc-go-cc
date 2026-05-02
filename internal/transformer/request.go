@@ -137,7 +137,7 @@ func (t *RequestTransformer) transformMessages(anthropicReq *types.MessageReques
 	if systemText != "" {
 		systemMsg := types.ChatMessage{
 			Role:    "system",
-			Content: systemText,
+			Content: types.NewTextContent(systemText),
 		}
 		// Try to extract cache_control from system array blocks
 		if len(anthropicReq.System) > 0 {
@@ -184,44 +184,63 @@ func (t *RequestTransformer) transformMessage(msg types.Message, modelID string,
 				text += b.Text
 			}
 		}
-		return []types.ChatMessage{{Role: msg.Role, Content: text}}, nil
+		return []types.ChatMessage{{Role: msg.Role, Content: types.NewTextContent(text)}}, nil
 	}
 }
 
-// transformUserMessage converts a user message with potential tool_result blocks.
+// transformUserMessage converts a user message with potential image and tool_result blocks.
 func (t *RequestTransformer) transformUserMessage(blocks []types.ContentBlock) ([]types.ChatMessage, error) {
 	var result []types.ChatMessage
 	var textParts []string
+	var contentParts []types.ContentPart
+	hasImages := false
 
 	for _, block := range blocks {
 		switch block.Type {
 		case "text":
 			textParts = append(textParts, block.Text)
 		case "tool_result":
-			// In OpenAI, tool results are separate messages with role "tool"
 			toolContent := block.TextContent()
 			result = append(result, types.ChatMessage{
 				Role:       "tool",
-				Content:    toolContent,
+				Content:    types.NewTextContent(toolContent),
 				ToolCallID: block.GetToolID(),
 			})
 		case "image":
-			// Images not supported in text-only models, skip
-			textParts = append(textParts, "[Image]")
+			if block.Source != nil && block.Source.Data != "" {
+				hasImages = true
+				contentParts = append(contentParts, types.ContentPart{
+					Type: "image_url",
+					ImageURL: &types.ImageURL{
+						URL: "data:" + block.Source.MediaType + ";base64," + block.Source.Data,
+					},
+				})
+			}
 		}
 	}
 
 	// If there's text content, add it as a user message
-	if len(textParts) > 0 {
+	if len(textParts) > 0 || hasImages {
 		text := ""
 		for _, p := range textParts {
 			text += p
 		}
-		// OpenAI-compatible tool calling requires tool responses to appear
-		// immediately after the assistant message that emitted tool_calls.
-		// If the Anthropic user turn also includes free-form text, emit it as
-		// a subsequent user message after all tool results.
-		userMsg := types.ChatMessage{Role: "user", Content: text}
+
+		var userMsg types.ChatMessage
+		userMsg.Role = "user"
+
+		if hasImages {
+			// Multimodal: build content array with text + images
+			parts := make([]types.ContentPart, 0, len(contentParts)+1)
+			if text != "" {
+				parts = append(parts, types.ContentPart{Type: "text", Text: text})
+			}
+			parts = append(parts, contentParts...)
+			userMsg.Content = types.NewMultimodalContent(parts)
+		} else {
+			userMsg.Content = types.NewTextContent(text)
+		}
+
 		result = append(result, userMsg)
 	}
 
@@ -292,7 +311,7 @@ func (t *RequestTransformer) transformAssistantMessage(blocks []types.ContentBlo
 
 	msg := types.ChatMessage{
 		Role:             "assistant",
-		Content:          content,
+		Content:          types.NewTextContent(content),
 		ReasoningContent: reasoningContentPtr,
 		ToolCalls:        toolCalls,
 	}

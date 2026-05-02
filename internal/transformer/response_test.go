@@ -176,7 +176,7 @@ func TestTransformResponseNoReasoningContent(t *testing.T) {
 				Index: 0,
 				Message: types.ChatMessage{
 					Role:    "assistant",
-					Content: "Just a plain response.",
+					Content: types.NewTextContent("Just a plain response."),
 				},
 				FinishReason: "stop",
 			},
@@ -214,7 +214,7 @@ func TestTransformResponseWithCacheTokens(t *testing.T) {
 				Index: 0,
 				Message: types.ChatMessage{
 					Role:    "assistant",
-					Content: "Hello, world!",
+					Content: types.NewTextContent("Hello, world!"),
 				},
 				FinishReason: "stop",
 			},
@@ -259,7 +259,7 @@ func TestTransformResponseWithoutCacheTokens(t *testing.T) {
 				Index: 0,
 				Message: types.ChatMessage{
 					Role:    "assistant",
-					Content: "No cache here",
+					Content: types.NewTextContent("No cache here"),
 				},
 				FinishReason: "stop",
 			},
