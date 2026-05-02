@@ -120,6 +120,32 @@ func (h *StreamHandler) ProxyStream(
 		}
 	}
 
+	// Some providers (e.g. DeepSeek) end the stream with [DONE] and no
+	// finish_reason chunk. Close any open content blocks and send a
+	// message_delta with stop_reason so the client receives a complete
+	// Anthropic event sequence.
+	if !stopSent {
+		if contentStarted || reasoningStarted {
+			cbStop := types.MessageEvent{
+				Type:  "content_block_stop",
+				Index: &contentIndex,
+			}
+			if err := writeSSEEvent(w, cbStop); err != nil {
+				return ErrClientDisconnected
+			}
+		}
+		msgDelta := types.MessageEvent{
+			Type: "message_delta",
+			Delta: &types.Delta{
+				StopReason: "end_turn",
+			},
+		}
+		if err := writeSSEEvent(w, msgDelta); err != nil {
+			return ErrClientDisconnected
+		}
+		flusher.Flush()
+	}
+
 	// Send message_stop event to signal stream completion.
 	stopEvent := types.MessageEvent{
 		Type: "message_stop",
@@ -164,7 +190,6 @@ func (h *StreamHandler) processSSELine(
 
 	// Handle [DONE] marker
 	if data == "[DONE]" {
-		return nil
 	}
 
 	// Fast path: check if this is a content chunk without full JSON parsing.
@@ -220,8 +245,9 @@ func (h *StreamHandler) processSSELine(
 						return ErrClientDisconnected
 					}
 					flusher.Flush()
+					return nil
 				}
-				return nil
+				// Empty content - fall through to finish_reason / JSON handling.
 			}
 		}
 	}
