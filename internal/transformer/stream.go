@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -218,6 +219,20 @@ func (h *StreamHandler) processSSELine(
 			start := idx + len(`"delta":{"content":"`)
 			end := strings.Index(data[start:], `"`)
 			if end != -1 {
+				// The content extracted from raw JSON is a JSON-encoded string
+				// (e.g., \n, \t, \" are literal escape sequences). We need to
+				// unescape it so that when json.Marshal re-encodes it for SSE,
+				// we get the correct characters, not double-escaped literals.
+				unescapeJSONString := func(s string) string {
+					// strconv.Unquote requires surrounding double quotes
+					unquoted, err := strconv.Unquote(`"` + s + `"`)
+					if err != nil {
+						// Fallback: return raw if unquote fails (e.g., malformed)
+						return s
+					}
+					return unquoted
+				}
+
 				content := data[start : start+end]
 				if content != "" {
 					if !*contentStarted {
@@ -248,7 +263,7 @@ func (h *StreamHandler) processSSELine(
 					// Send content_block_delta
 					delta := types.Delta{
 						Type: "text_delta",
-						Text: content,
+						Text: unescapeJSONString(content),
 					}
 					event := types.MessageEvent{
 						Type:  "content_block_delta",
