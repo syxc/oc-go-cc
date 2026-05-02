@@ -431,15 +431,20 @@ func (h *MessagesHandler) handleAnthropicStreaming(
 	// Copy the response directly (already in Anthropic format)
 	// SSE headers already set by handleStreaming
 	// Use io.Copy which handles streaming efficiently
-	_, err = io.Copy(w, resp.Body)
+	return copyAnthropicStream(ctx, w, resp.Body)
+}
+
+func copyAnthropicStream(ctx context.Context, w io.Writer, body io.Reader) error {
+	bytesCopied, err := io.Copy(w, body)
 	if err != nil {
-		// Check if this was a client disconnect
 		if ctx.Err() == context.Canceled {
 			return transformer.ErrClientDisconnected
 		}
 		return fmt.Errorf("failed to copy response: %w", err)
 	}
-
+	if bytesCopied == 0 {
+		return fmt.Errorf("upstream stream ended without any events")
+	}
 	return nil
 }
 
