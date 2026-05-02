@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"oc-go-cc/pkg/types"
+	"github.com/syxc/oc-go-cc/pkg/types"
 )
 
 // ErrClientDisconnected is returned when the client disconnects during streaming.

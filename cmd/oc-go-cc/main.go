@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
-	"oc-go-cc/internal/config"
-	"oc-go-cc/internal/daemon"
-	"oc-go-cc/internal/server"
+	"github.com/syxc/oc-go-cc/internal/config"
+	"github.com/syxc/oc-go-cc/internal/daemon"
+	"github.com/syxc/oc-go-cc/internal/server"
 )
 
 const (

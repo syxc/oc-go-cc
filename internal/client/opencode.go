@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"time"
 
-	"oc-go-cc/internal/config"
-	"oc-go-cc/pkg/types"
+	"github.com/syxc/oc-go-cc/internal/config"
+	"github.com/syxc/oc-go-cc/pkg/types"
 )
 
 // OpenCodeClient handles communication with OpenCode Go API.

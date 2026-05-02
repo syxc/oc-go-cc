@@ -3,7 +3,7 @@ package router
 import (
 	"testing"
 
-	"oc-go-cc/internal/config"
+	"github.com/syxc/oc-go-cc/internal/config"
 )
 
 func TestFindModelByID_MatchesCustomModelKey(t *testing.T) {

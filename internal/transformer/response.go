@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"oc-go-cc/pkg/types"
+	"github.com/syxc/oc-go-cc/pkg/types"
 )
 
 // ResponseTransformer converts OpenAI responses to Anthropic format.

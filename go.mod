@@ -1,4 +1,4 @@
-module oc-go-cc
+module github.com/syxc/oc-go-cc
 
 go 1.25.0
 

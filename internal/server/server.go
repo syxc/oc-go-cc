@@ -11,12 +11,12 @@ import (
 	"syscall"
 	"time"
 
-	"oc-go-cc/internal/client"
-	"oc-go-cc/internal/config"
-	"oc-go-cc/internal/handlers"
-	"oc-go-cc/internal/metrics"
-	"oc-go-cc/internal/router"
-	"oc-go-cc/internal/token"
+	"github.com/syxc/oc-go-cc/internal/client"
+	"github.com/syxc/oc-go-cc/internal/config"
+	"github.com/syxc/oc-go-cc/internal/handlers"
+	"github.com/syxc/oc-go-cc/internal/metrics"
+	"github.com/syxc/oc-go-cc/internal/router"
+	"github.com/syxc/oc-go-cc/internal/token"
 )
 
 // Server represents the proxy server.

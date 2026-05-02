@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"oc-go-cc/internal/token"
-	"oc-go-cc/pkg/types"
+	"github.com/syxc/oc-go-cc/internal/token"
+	"github.com/syxc/oc-go-cc/pkg/types"
 )
 
 func tokenMessagesFromAnthropic(messages []types.Message) []token.MessageContent {

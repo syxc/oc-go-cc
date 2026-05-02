@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
-	"oc-go-cc/internal/config"
-	"oc-go-cc/pkg/types"
+	"github.com/syxc/oc-go-cc/internal/config"
+	"github.com/syxc/oc-go-cc/pkg/types"
 )
 
 // TestTransformRequestRoundTripReasoning verifies that a DeepSeek response with

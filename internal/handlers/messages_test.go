@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"oc-go-cc/internal/transformer"
+	"github.com/syxc/oc-go-cc/internal/transformer"
 )
 
 func TestReplaceModelInRawBody(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"oc-go-cc/internal/config"
+	"github.com/syxc/oc-go-cc/internal/config"
 )
 
 // Scenario represents the routing scenario for model selection.

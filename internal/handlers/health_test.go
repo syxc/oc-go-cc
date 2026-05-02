@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"oc-go-cc/internal/metrics"
-	"oc-go-cc/internal/token"
+	"github.com/syxc/oc-go-cc/internal/metrics"
+	"github.com/syxc/oc-go-cc/internal/token"
 )
 
 func TestHandleCountTokensSupportsAnthropicContentBlocks(t *testing.T) {

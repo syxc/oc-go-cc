@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"oc-go-cc/internal/config"
-	"oc-go-cc/pkg/types"
+	"github.com/syxc/oc-go-cc/internal/config"
+	"github.com/syxc/oc-go-cc/pkg/types"
 )
 
 // RequestTransformer converts Anthropic requests to OpenAI format.

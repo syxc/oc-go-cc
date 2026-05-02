@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"oc-go-cc/internal/config"
+	"github.com/syxc/oc-go-cc/internal/config"
 )
 
 func TestHasComplexPattern_UserMessage(t *testing.T) {

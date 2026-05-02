@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"oc-go-cc/internal/config"
+	"github.com/syxc/oc-go-cc/internal/config"
 )
 
 const scenarioLongContext = "long_context"

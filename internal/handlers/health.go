@@ -4,10 +4,10 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"oc-go-cc/internal/metrics"
-	"oc-go-cc/internal/router"
-	"oc-go-cc/internal/token"
-	"oc-go-cc/pkg/types"
+	"github.com/syxc/oc-go-cc/internal/metrics"
+	"github.com/syxc/oc-go-cc/internal/router"
+	"github.com/syxc/oc-go-cc/internal/token"
+	"github.com/syxc/oc-go-cc/pkg/types"
 )
 
 // HealthHandler handles health checks and token counting endpoints.

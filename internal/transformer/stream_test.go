@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"oc-go-cc/pkg/types"
+	"github.com/syxc/oc-go-cc/pkg/types"
 )
 
 // mockResponseWriter implements http.ResponseWriter and http.Flusher for testing.
