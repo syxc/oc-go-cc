@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/syxc/oc-go-cc/internal/client"
@@ -213,12 +214,10 @@ func (h *MessagesHandler) HandleMessages(w http.ResponseWriter, r *http.Request)
 
 	// Build fallback chain.
 	modelChain := routeResult.GetModelChain()
-	// Use the request model name in the response so Claude Code's provider routing
-	// can match it. Fall back to routed model if request model is empty.
-	responseModel := anthropicReq.Model
-	if responseModel == "" {
-		responseModel = routeResult.Primary.ModelID
-	}
+	// Normalize the response model name so Claude Code's client-side provider
+	// routing can always match it. Claude Code maintains an internal provider
+	// table keyed by model name prefix; unrecognized names cause H.startsWith.
+	responseModel := normalizeResponseModel(anthropicReq.Model, routeResult.Primary.ModelID)
 
 	if isStreaming {
 		// Streaming: use ProxyStream for real-time SSE transformation
@@ -609,6 +608,30 @@ func hasOnlyToolResults(blocks []types.ContentBlock) bool {
 		}
 	}
 	return true
+}
+
+// normalizeResponseModel maps a request model name to a Claude-recognized
+// response model name. Claude Code's provider routing table only recognizes
+// Anthropic model names; responding with any other name (e.g., deepseek-v4-pro)
+// causes H.startsWith errors.
+func normalizeResponseModel(requestModel, routedModel string) string {
+	if requestModel == "" {
+		requestModel = routedModel
+	}
+	lower := strings.ToLower(requestModel)
+	// Claude model variants — return as-is so Claude Code matches them correctly
+	if strings.Contains(lower, "claude") {
+		return requestModel
+	}
+	// Known non-Claude ID patterns — map to haiku for flash, opus for pro
+	if strings.Contains(lower, "haiku") || strings.Contains(lower, "flash") {
+		return "claude-haiku-4-5-20251001"
+	}
+	if strings.Contains(lower, "opus") {
+		return "claude-opus-4-7"
+	}
+	// Default: sonnet covers the majority of coding requests
+	return "claude-sonnet-4-6"
 }
 
 // sendError sends an error response in Anthropic format.
