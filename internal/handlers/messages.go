@@ -341,7 +341,9 @@ func (h *MessagesHandler) handleStreaming(
 		}
 
 		// Proxy the stream: transform OpenAI SSE → Anthropic SSE in real-time
-		if err := h.streamHandler.ProxyStream(rw, streamBody, model.ModelID, clientCtx); err != nil {
+		// Use the original request model name in the response so Claude Code's
+		// provider routing can match it to its internal model table.
+		if err := h.streamHandler.ProxyStream(rw, streamBody, anthropicReq.Model, clientCtx); err != nil {
 			_ = streamBody.Close()
 			cancel()
 			if err == transformer.ErrClientDisconnected {
@@ -558,7 +560,8 @@ func (h *MessagesHandler) executeOpenAIRequest(
 	}
 
 	// Transform response to Anthropic format.
-	anthropicResp, err := h.responseTransformer.TransformResponse(resp, model.ModelID)
+	// Use the original request model name so Claude Code can match it.
+	anthropicResp, err := h.responseTransformer.TransformResponse(resp, anthropicReq.Model)
 	if err != nil {
 		return nil, fmt.Errorf("response transform failed: %w", err)
 	}
