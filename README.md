@@ -140,7 +140,14 @@ In a separate terminal (or the same one before running `claude`):
 ```bash
 export ANTHROPIC_BASE_URL=http://127.0.0.1:3456
 export ANTHROPIC_AUTH_TOKEN=unused
+export ANTHROPIC_MODEL=deepseek-v4-pro
+export ANTHROPIC_DEFAULT_HAIKU_MODEL=deepseek-v4-flash
+export ANTHROPIC_DEFAULT_SONNET_MODEL=qwen3.5-plus
+export ANTHROPIC_DEFAULT_OPUS_MODEL=deepseek-v4-pro[1m]
+export CLAUDE_CODE_SUBAGENT_MODEL=deepseek-v4-flash
 ```
+
+`oc-go-cc` recognizes these Claude Code model variables and maps them onto your configured routing targets. Model aliases with a context suffix such as `deepseek-v4-pro[1m]` are normalized automatically before sending the upstream request.
 
 ### 5. Run Claude Code
 
@@ -252,6 +259,26 @@ Override with `OC_GO_CC_CONFIG` environment variable.
       "temperature": 0.7,
       "max_tokens": 16384,
       "context_threshold": 80000
+    },
+    "deepseek-v4-pro": {
+      "provider": "opencode-go",
+      "model_id": "deepseek-v4-pro",
+      "temperature": 0.7,
+      "max_tokens": 8192,
+      "reasoning_effort": "max",
+      "thinking": {
+        "type": "enabled"
+      }
+    },
+    "deepseek-v4-flash": {
+      "provider": "opencode-go",
+      "model_id": "deepseek-v4-flash",
+      "temperature": 0.7,
+      "max_tokens": 4096,
+      "reasoning_effort": "max",
+      "thinking": {
+        "type": "enabled"
+      }
     },
     "fast": {
       "provider": "opencode-go",

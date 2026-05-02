@@ -8,7 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strings"
+	"strconv"
 	"time"
 
 	"oc-go-cc/internal/client"
@@ -378,29 +378,34 @@ func (h *MessagesHandler) handleStreaming(
 // replaceModelInRawBody replaces the model field in raw JSON body with the actual model ID.
 // This is needed for Anthropic endpoint which validates the model name.
 func replaceModelInRawBody(rawBody json.RawMessage, modelID string) json.RawMessage {
-	// Simple string replacement - find "model":"..." and replace with "model":"actual-model"
-	bodyStr := string(rawBody)
-
-	// Try to find and replace the model field
-	// Pattern: "model":"claude-..." or "model":"any-model-name"
-	if idx := strings.Index(bodyStr, `"model":"`); idx != -1 {
-		start := idx + len(`"model":"`)
-		if end := strings.Index(bodyStr[start:], `"`); end != -1 {
-			oldModel := bodyStr[start : start+end]
-			// Replace the model value
-			newBody := bodyStr[:start] + modelID + bodyStr[start+end:]
-			slog.Debug("replaced model in request body",
-				"old_model", oldModel,
-				"new_model", modelID,
-				"success", true)
-			return json.RawMessage(newBody)
-		}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(rawBody, &payload); err != nil {
+		bodyStr := string(rawBody)
+		slog.Warn("could not parse request body for model replacement, using original",
+			"error", err,
+			"body_preview", bodyStr[:min(len(bodyStr), 200)])
+		return rawBody
 	}
 
-	slog.Warn("could not find model field in request body, using original",
-		"body_preview", bodyStr[:min(len(bodyStr), 200)])
-	// If we couldn't parse, return original (will likely fail upstream but that's ok)
-	return rawBody
+	oldModel := ""
+	if rawModel, ok := payload["model"]; ok {
+		_ = json.Unmarshal(rawModel, &oldModel)
+	}
+	payload["model"] = json.RawMessage(strconv.Quote(modelID))
+
+	updatedBody, err := json.Marshal(payload)
+	if err != nil {
+		slog.Warn("could not marshal request body after model replacement, using original",
+			"error", err,
+			"new_model", modelID)
+		return rawBody
+	}
+
+	slog.Debug("replaced model in request body",
+		"old_model", oldModel,
+		"new_model", modelID,
+		"success", true)
+	return json.RawMessage(updatedBody)
 }
 
 // handleAnthropicStreaming sends a raw Anthropic request to the Anthropic endpoint.
@@ -509,8 +514,10 @@ func (h *MessagesHandler) executeAnthropicRequest(
 	rawBody json.RawMessage,
 	model config.ModelConfig,
 ) ([]byte, error) {
+	modelBody := replaceModelInRawBody(rawBody, model.ModelID)
+
 	// Send raw Anthropic request to Anthropic endpoint
-	resp, err := h.client.SendAnthropicRequest(ctx, rawBody, false)
+	resp, err := h.client.SendAnthropicRequest(ctx, modelBody, false)
 	if err != nil {
 		return nil, fmt.Errorf("anthropic request failed: %w", err)
 	}

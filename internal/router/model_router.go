@@ -4,10 +4,14 @@ package router
 
 import (
 	"fmt"
+	"os"
+	"sort"
 	"strings"
 
 	"oc-go-cc/internal/config"
 )
+
+const scenarioLongContext = "long_context"
 
 // ModelRouter handles model selection based on scenarios.
 type ModelRouter struct {
@@ -27,32 +31,38 @@ type RouteResult struct {
 }
 
 // FindModelByID looks up a model config by its model_id across all scenarios.
-// Also recognizes Claude Code model variants (haiku/sonnet/opus) and maps them
-// to configured scenarios: haiku→background, sonnet→default, opus→complex.
+// It also recognizes Claude Code aliases and model names with context suffixes
+// such as deepseek-v4-pro[1m].
 func (r *ModelRouter) FindModelByID(modelID string) (config.ModelConfig, []config.ModelConfig, bool) {
 	if modelID == "" {
 		return config.ModelConfig{}, nil, false
 	}
 
-	// 1. Direct model_id match across configured scenarios (priority order).
+	// 1. Direct model_id match across configured models, including custom keys.
 	priority := []string{"default", "complex", "think", "long_context", "background", "fast"}
 	for _, scenario := range priority {
-		if mc, ok := r.config.Models[scenario]; ok && mc.ModelID == modelID {
+		if mc, ok := r.config.Models[scenario]; ok && matchesRequestedModelID(mc.ModelID, modelID) {
 			return mc, r.config.Fallbacks[scenario], true
 		}
 	}
 
-	// 2. Claude Code variant mapping — haiku→cheap, sonnet→balanced, opus→capable.
-	lower := strings.ToLower(modelID)
-	var variantScenario string
-	switch {
-	case strings.Contains(lower, "haiku"):
-		variantScenario = "background"
-	case strings.Contains(lower, "opus"):
-		variantScenario = "complex"
-	case strings.Contains(lower, "sonnet"):
-		variantScenario = "default"
-	default:
+	var extraKeys []string
+	for key := range r.config.Models {
+		if contains(priority, key) {
+			continue
+		}
+		extraKeys = append(extraKeys, key)
+	}
+	sort.Strings(extraKeys)
+	for _, key := range extraKeys {
+		if mc := r.config.Models[key]; matchesRequestedModelID(mc.ModelID, modelID) {
+			return mc, r.config.Fallbacks[key], true
+		}
+	}
+
+	// 2. Claude Code alias/env-var mapping.
+	variantScenario := r.resolveClaudeCodeScenario(modelID)
+	if variantScenario == "" {
 		return config.ModelConfig{}, nil, false
 	}
 	if mc, ok := r.config.Models[variantScenario]; ok {
@@ -60,6 +70,88 @@ func (r *ModelRouter) FindModelByID(modelID string) (config.ModelConfig, []confi
 	}
 
 	return config.ModelConfig{}, nil, false
+}
+
+func (r *ModelRouter) resolveClaudeCodeScenario(modelID string) string {
+	requestedBase, _ := normalizeRequestedModelID(modelID)
+
+	envMappings := []struct {
+		EnvName  string
+		Scenario string
+	}{
+		{EnvName: "ANTHROPIC_MODEL", Scenario: "default"},
+		{EnvName: "ANTHROPIC_DEFAULT_HAIKU_MODEL", Scenario: "background"},
+		{EnvName: "ANTHROPIC_DEFAULT_SONNET_MODEL", Scenario: "default"},
+		{EnvName: "ANTHROPIC_DEFAULT_OPUS_MODEL", Scenario: "complex"},
+		{EnvName: "CLAUDE_CODE_SUBAGENT_MODEL", Scenario: "background"},
+	}
+
+	for _, mapping := range envMappings {
+		alias := os.Getenv(mapping.EnvName)
+		if alias == "" || !matchesRequestedModelID(alias, modelID) {
+			continue
+		}
+		return mapping.Scenario
+	}
+
+	lowerBase := strings.ToLower(requestedBase)
+	switch {
+	case strings.Contains(lowerBase, "haiku"):
+		return "background"
+	case strings.Contains(lowerBase, "opus"):
+		return "complex"
+	case strings.Contains(lowerBase, "sonnet"):
+		return "default"
+	default:
+		return ""
+	}
+}
+
+func matchesRequestedModelID(configuredModelID, requestedModelID string) bool {
+	configuredBase, configuredContext := normalizeRequestedModelID(configuredModelID)
+	requestedBase, requestedContext := normalizeRequestedModelID(requestedModelID)
+
+	if configuredBase == "" || requestedBase == "" {
+		return false
+	}
+	if !strings.EqualFold(configuredBase, requestedBase) {
+		return false
+	}
+	return configuredContext == "" || requestedContext == "" || configuredContext == requestedContext
+}
+
+func normalizeRequestedModelID(modelID string) (string, string) {
+	trimmed := strings.TrimSpace(modelID)
+	if trimmed == "" {
+		return "", ""
+	}
+
+	open := strings.LastIndex(trimmed, "[")
+	if open == -1 || !strings.HasSuffix(trimmed, "]") {
+		return trimmed, ""
+	}
+
+	base := strings.TrimSpace(trimmed[:open])
+	if base == "" {
+		return trimmed, ""
+	}
+
+	suffix := strings.ToLower(strings.TrimSpace(trimmed[open+1 : len(trimmed)-1]))
+	switch suffix {
+	case "1m", "long-context", "long_context":
+		return base, scenarioLongContext
+	default:
+		return base, ""
+	}
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 // Route determines which model to use for a request.

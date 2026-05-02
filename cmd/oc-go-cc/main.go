@@ -381,6 +381,26 @@ func getDefaultConfig() string {
       "max_tokens": 16384,
       "context_threshold": 80000
     },
+    "deepseek-v4-pro": {
+      "provider": "opencode-go",
+      "model_id": "deepseek-v4-pro",
+      "temperature": 0.7,
+      "max_tokens": 8192,
+      "reasoning_effort": "max",
+      "thinking": {
+        "type": "enabled"
+      }
+    },
+    "deepseek-v4-flash": {
+      "provider": "opencode-go",
+      "model_id": "deepseek-v4-flash",
+      "temperature": 0.7,
+      "max_tokens": 4096,
+      "reasoning_effort": "max",
+      "thinking": {
+        "type": "enabled"
+      }
+    },
     "think": {
       "provider": "opencode-go",
       "model_id": "glm-5",
