@@ -213,13 +213,19 @@ func (h *MessagesHandler) HandleMessages(w http.ResponseWriter, r *http.Request)
 
 	// Build fallback chain.
 	modelChain := routeResult.GetModelChain()
+	// Use the request model name in the response so Claude Code's provider routing
+	// can match it. Fall back to routed model if request model is empty.
+	responseModel := anthropicReq.Model
+	if responseModel == "" {
+		responseModel = routeResult.Primary.ModelID
+	}
 
 	if isStreaming {
 		// Streaming: use ProxyStream for real-time SSE transformation
-		h.handleStreaming(w, r, &anthropicReq, modelChain, rawBody)
+		h.handleStreaming(w, r, &anthropicReq, modelChain, rawBody, responseModel)
 	} else {
 		// Non-streaming: execute with fallback and return full response
-		h.handleNonStreaming(w, r, &anthropicReq, modelChain, rawBody)
+		h.handleNonStreaming(w, r, &anthropicReq, modelChain, rawBody, responseModel)
 	}
 }
 
@@ -230,6 +236,7 @@ func (h *MessagesHandler) handleStreaming(
 	anthropicReq *types.MessageRequest,
 	modelChain []config.ModelConfig,
 	rawBody json.RawMessage,
+	responseModel string,
 ) {
 	// Each fallback attempt needs its own context with timeout.
 	// Don't share r.Context() across fallbacks - when Claude Code retries,
@@ -343,7 +350,7 @@ func (h *MessagesHandler) handleStreaming(
 		// Proxy the stream: transform OpenAI SSE → Anthropic SSE in real-time
 		// Use the original request model name in the response so Claude Code's
 		// provider routing can match it to its internal model table.
-		if err := h.streamHandler.ProxyStream(rw, streamBody, anthropicReq.Model, clientCtx); err != nil {
+		if err := h.streamHandler.ProxyStream(rw, streamBody, responseModel, clientCtx); err != nil {
 			_ = streamBody.Close()
 			cancel()
 			if err == transformer.ErrClientDisconnected {
@@ -478,6 +485,7 @@ func (h *MessagesHandler) handleNonStreaming(
 	anthropicReq *types.MessageRequest,
 	modelChain []config.ModelConfig,
 	rawBody json.RawMessage,
+	responseModel string,
 ) {
 	ctx := r.Context()
 	startTime := time.Now()
@@ -491,7 +499,7 @@ func (h *MessagesHandler) handleNonStreaming(
 				return h.executeAnthropicRequest(ctx, rawBody, model)
 			}
 			// Otherwise use OpenAI transformation
-			return h.executeOpenAIRequest(ctx, anthropicReq, model)
+				return h.executeOpenAIRequest(ctx, anthropicReq, model, responseModel)
 		},
 	)
 
@@ -546,6 +554,7 @@ func (h *MessagesHandler) executeOpenAIRequest(
 	ctx context.Context,
 	anthropicReq *types.MessageRequest,
 	model config.ModelConfig,
+	responseModel string,
 ) ([]byte, error) {
 	// Transform request to OpenAI format.
 	openaiReq, err := h.requestTransformer.TransformRequest(anthropicReq, model)
@@ -561,7 +570,7 @@ func (h *MessagesHandler) executeOpenAIRequest(
 
 	// Transform response to Anthropic format.
 	// Use the original request model name so Claude Code can match it.
-	anthropicResp, err := h.responseTransformer.TransformResponse(resp, anthropicReq.Model)
+	anthropicResp, err := h.responseTransformer.TransformResponse(resp, responseModel)
 	if err != nil {
 		return nil, fmt.Errorf("response transform failed: %w", err)
 	}
