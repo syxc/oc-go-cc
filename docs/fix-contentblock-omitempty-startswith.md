@@ -217,3 +217,28 @@ chunk 3: tool_calls[{index:0, function:{arguments:"...\"}"}}]
 | `internal/transformer/stream.go` | 1. `ProxyStream` 加 `toolBlocks map[int]int` |
 | | 2. `processSSELine` 加 `toolBlocks` 参数 |
 | | 3. tool_use 处理: 仅 `tc.ID != ""` 或 index 未跟踪时创建新 block |
+
+---
+
+# Fix Round 4: finish_reason fast path 不关闭 tool_use 块
+
+- **Branch**: `fix/stream-stability`
+- **Date**: 2026-05-03
+
+## 现象
+
+Round 3 修复后，finish_reason fast path（`processSSELine` L286-330）在遇到 `finish_reason` 不含 `usage` 的 chunk 时，只关闭 text/reasoning 块，不关闭 tool_use 块。该 fast path 设置 `stopSent=true` 后 return，导致 safety net 也不会介入。
+
+## 根因
+
+finish_reason fast path 缺少 tool_use 块关闭逻辑。与 JSON 解析路径（L497-527）的 finish 处理不一致。
+
+## 修复
+
+在 finish_reason fast path 的 text/reasoning 关闭和 message_delta 之间，增加 tool_use 块关闭逻辑，与 JSON 路径保持一致。
+
+## 变更文件
+
+| 文件 | 变更 |
+|------|------|
+| `internal/transformer/stream.go` | finish_reason fast path 增加 tool_use block 关闭（`*toolUseCount > 0` 遍历关闭） |

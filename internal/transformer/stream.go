@@ -298,6 +298,22 @@ func (h *StreamHandler) processSSELine(
 			}
 		}
 
+		// Close any open tool_use blocks. Tool calls started at indices
+		// (contentIndex - toolUseCount + 1) through (contentIndex).
+		if *toolUseCount > 0 {
+			for i := 0; i < *toolUseCount; i++ {
+				idx := *contentIndex - *toolUseCount + i + 1
+				stopEvent := types.MessageEvent{
+					Type:  "content_block_stop",
+					Index: &idx,
+				}
+				if err := writeSSEEvent(w, stopEvent); err != nil {
+					return ErrClientDisconnected
+				}
+			}
+			*toolUseCount = 0
+		}
+
 		// Send message_delta with stop_reason
 		msgDelta := types.MessageEvent{
 			Type: "message_delta",
