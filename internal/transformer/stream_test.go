@@ -250,9 +250,9 @@ func TestProxyStream_UsageOnlyChunk(t *testing.T) {
 }
 
 // TestProxyStream_NoDuplicateMessageDelta verifies that when finish_reason and
-// usage arrive in separate chunks, only ONE message_delta with a stop_reason
-// is emitted. Usage may arrive in a separate message_delta (without stop_reason)
-// if the upstream sends them in separate chunks.
+// usage arrive in separate chunks, both message_delta events carry a stop_reason
+// so the client never sees an undefined stop_reason (H.startsWith). Usage is
+// carried alongside the second stop_reason.
 func TestProxyStream_NoDuplicateMessageDelta(t *testing.T) {
 	handler := NewStreamHandler()
 	w := newMockResponseWriter()
@@ -271,7 +271,8 @@ func TestProxyStream_NoDuplicateMessageDelta(t *testing.T) {
 
 	events := parseSSEEvents(t, w.buf.String())
 
-	// Count message_delta events with a stop_reason
+	// Both message_delta events must carry a stop_reason so the client
+	// never sees undefined stop_reason (H.startsWith root cause).
 	var stopDeltas []types.MessageEvent
 	for _, ev := range events {
 		if ev.Type == "message_delta" && ev.Delta != nil && ev.Delta.StopReason != "" {
@@ -279,8 +280,16 @@ func TestProxyStream_NoDuplicateMessageDelta(t *testing.T) {
 		}
 	}
 
-	if len(stopDeltas) != 1 {
-		t.Fatalf("expected exactly 1 message_delta with stop_reason, got %d: %+v", len(stopDeltas), stopDeltas)
+	if len(stopDeltas) != 2 {
+		t.Fatalf("expected exactly 2 message_delta events with stop_reason, got %d: %+v", len(stopDeltas), stopDeltas)
+	}
+
+	// The second message_delta should carry usage
+	if stopDeltas[1].Usage == nil {
+		t.Fatalf("second message_delta should carry usage: %+v", stopDeltas[1])
+	}
+	if got, want := stopDeltas[1].Usage.InputTokens, 100; got != want {
+		t.Errorf("InputTokens = %d, want %d", got, want)
 	}
 
 	// Verify usage is somewhere in the stream

@@ -498,7 +498,7 @@ func (h *MessagesHandler) handleNonStreaming(
 				return h.executeAnthropicRequest(ctx, rawBody, model)
 			}
 			// Otherwise use OpenAI transformation
-				return h.executeOpenAIRequest(ctx, anthropicReq, model, responseModel)
+			return h.executeOpenAIRequest(ctx, anthropicReq, model, responseModel)
 		},
 	)
 

@@ -121,3 +121,99 @@ event: message_stop         → 流结束
 - **fast path 的陷阱**：性能优化路径（字符串匹配而非 JSON 解析）的 early return 必须严格限定在确实处理完数据的分支内，否则会吞掉后续重要事件。
 - **防御性设计**：在流结束时检查关键事件是否已发送，补发缺失的事件，是应对 provider 差异的有效策略。
 - **sed/自动编辑风险**：复杂多行替换容易引入遗留代码，编辑后必须逐行检查 diff。
+
+---
+
+# Fix Round 2: content_block_stop index 交换 + 空 delta message_delta + safety net 缺少 tool_use 关闭
+
+- **Branch**: `fix/stream-stability`
+- **Date**: 2026-05-03
+- **Error 1**: `API Error: undefined is not an object (evaluating 'H.startsWith')` (再发)
+- **Error 2**: `API Error: Content block not found`
+
+## 根因
+
+### 根因 1：`content_block_stop` index 交换
+
+`contentIndex` 在 text/reasoning 和 tool_use 之间共享递增。典型 text + tool_use 流程：
+
+```
+text start:  contentIndex=0, start index=0
+tool_use:    contentIndex++ → 1, start index=1
+finish 关闭 text:  Index=contentIndex=1  ← 错误！text 启动时 index=0
+finish 关闭 tool:  idx=1-1+0=0          ← 错误！tool 启动时 index=1
+```
+
+两者索引互换，Claude Code 找不到匹配的 content block。
+
+**修复**：关闭 text/reasoning 时使用 `contentIndex - toolUseCount`（该 block 启动时的 index），关闭 tool_use 时使用 `contentIndex - toolUseCount + i + 1`。
+
+### 根因 2：第二个 `message_delta` 空 delta
+
+当 `finish_reason` 先到达（设置 `stopSent=true`），后续再收到 usage-only chunk 时，代码发送一个 delta 为空的 `message_delta`。Anthropic SSE 协议规定每个 stream 只有一个 `message_delta`。发送第二个（空 delta）可能导致 Claude Code 用 `undefined` 覆盖已接收的 `stop_reason`，触发 H.startsWith。
+
+**修复**：当 `stopSent` 已为 true 时，跳过 usage-only chunk，不发送任何消息。
+
+### 根因 3：safety net 不关闭 tool_use block
+
+`safety net`（`ProxyStream` 末尾的 `!stopSent` 分支）只关闭 text/reasoning block，不处理 tool_use block。当 stream 在 tool_use 后无 `finish_reason` 地结束时，tool_use block 永远不会被关闭。
+
+**修复**：在 safety net 中增加 tool_use block 的关闭逻辑。
+
+## 变更文件
+
+| 文件 | 变更 |
+|------|------|
+| `internal/transformer/stream.go` | 1. text/reasoning 关闭 index 改为 `contentIndex - toolUseCount`（3 处：finish_reason fast path、JSON path、safety net） |
+| | 2. tool_use 关闭 index 改为 `contentIndex - toolUseCount + i + 1`（2 处：JSON path、safety net） |
+| | 3. safety net 增加 tool_use block 关闭 |
+| | 4. `stopSent==true` usage-only chunk 携带 `stop_reason` |
+| | 5. `[DONE]` 空 if 块替换为注释（fix staticcheck） |
+| `internal/handlers/messages.go` | fix gofmt indent |
+| `pkg/types/anthropic.go` | fix gofmt indent |
+
+---
+
+# Fix Round 3: tool_use 重复创建 content_block_start 导致 H.startsWith + Invalid tool parameters
+
+- **Branch**: `fix/stream-stability`
+- **Date**: 2026-05-03
+- **Error 1**: `API Error: undefined is not an object (evaluating 'H.startsWith')` (仍出现，4 次)
+- **Error 2**: `Invalid tool parameters`
+
+## 现象
+
+H.startsWith 再发，且每次出现 4 次才停下。伴随出现 `Invalid tool parameters`。
+
+## 根因：tool_use 多 chunk 流式协议处理错误
+
+OpenAI 流式格式中，tool_call 数据分多个 chunk 发送：
+
+```
+chunk 1: tool_calls[{index:0, id:"call_xxx", function:{name:"read_file", arguments:""}}]
+chunk 2: tool_calls[{index:0, function:{arguments:"{\"filePath\":...}"}}]
+chunk 3: tool_calls[{index:0, function:{arguments:"...\"}"}}]
+```
+
+**bug**：代码对 **每个** chunk 的每个 tool_call 都创建新的 `content_block_start`（`stream.go:419-459`），而非只在首个 chunk（有 `id`）时创建。chunk 2/3 创建的 block 没有 `name`（`tc.Function.Name == ""`）、ID 为随机生成的新值。
+
+结果：
+- Claude Code 收到 4 个 tool_use block（1 个正确 + 3 个 name 为空）→ 4 次 `H.startsWith`（`H = name`, `name.startsWith()` 在 `undefined` 上失败）
+- 空 name 的 block → `Invalid tool parameters`
+- 随机 ID 无法匹配后续 tool_result
+
+**修复**：跟踪已创建的 tool_use block（`toolBlocks map[int]int`，tool call index → content block index）。
+
+- 首个 chunk 有 `tc.ID != ""` 或 `toolBlocks` 中不存在该 index → 创建新 `content_block_start`
+- 后续 chunk 无 `tc.ID` 但 index 已在 `toolBlocks` 中 → 只发送 `input_json_delta`
+
+**还需**: 给 `ToolCall` 加 `Index *int json:"index,omitempty"` 字段以解析 OpenAI 流式 tool_call delta 中的 index。
+
+## 变更文件
+
+| 文件 | 变更 |
+|------|------|
+| `pkg/types/openai.go` | `ToolCall` 加 `Index *int json:"index,omitempty"` |
+| `internal/transformer/stream.go` | 1. `ProxyStream` 加 `toolBlocks map[int]int` |
+| | 2. `processSSELine` 加 `toolBlocks` 参数 |
+| | 3. tool_use 处理: 仅 `tc.ID != ""` 或 index 未跟踪时创建新 block |

@@ -73,6 +73,7 @@ func (h *StreamHandler) ProxyStream(
 	reasoningStarted := false
 	stopSent := false
 	toolUseCount := 0
+	toolBlocks := make(map[int]int) // tool call index → content block index
 
 	// Read in larger chunks for efficiency, then parse lines
 	readBuf := make([]byte, 4096)
@@ -96,7 +97,7 @@ func (h *StreamHandler) ProxyStream(
 					lineBuf.Reset()
 
 					// Process complete line
-					if err := h.processSSELine(w, flusher, line, &contentIndex, &contentStarted, &reasoningStarted, &stopSent, &toolUseCount, originalModel); err != nil {
+					if err := h.processSSELine(w, flusher, line, &contentIndex, &contentStarted, &reasoningStarted, &stopSent, &toolUseCount, toolBlocks, originalModel); err != nil {
 						return err
 					}
 				} else {
@@ -109,7 +110,7 @@ func (h *StreamHandler) ProxyStream(
 			// Process any remaining data in buffer
 			if lineBuf.Len() > 0 {
 				line := lineBuf.String()
-				if err := h.processSSELine(w, flusher, line, &contentIndex, &contentStarted, &reasoningStarted, &stopSent, &toolUseCount, originalModel); err != nil {
+				if err := h.processSSELine(w, flusher, line, &contentIndex, &contentStarted, &reasoningStarted, &stopSent, &toolUseCount, toolBlocks, originalModel); err != nil {
 					return err
 				}
 			}
@@ -126,13 +127,27 @@ func (h *StreamHandler) ProxyStream(
 	// Anthropic event sequence.
 	if !stopSent {
 		if contentStarted || reasoningStarted {
+			closeIdx := contentIndex - toolUseCount
 			cbStop := types.MessageEvent{
 				Type:  "content_block_stop",
-				Index: &contentIndex,
+				Index: &closeIdx,
 			}
 			if err := writeSSEEvent(w, cbStop); err != nil {
 				return ErrClientDisconnected
 			}
+		}
+		if toolUseCount > 0 {
+			for i := 0; i < toolUseCount; i++ {
+				idx := contentIndex - toolUseCount + i + 1
+				cbStop := types.MessageEvent{
+					Type:  "content_block_stop",
+					Index: &idx,
+				}
+				if err := writeSSEEvent(w, cbStop); err != nil {
+					return ErrClientDisconnected
+				}
+			}
+			toolUseCount = 0
 		}
 		msgDelta := types.MessageEvent{
 			Type: "message_delta",
@@ -169,6 +184,7 @@ func (h *StreamHandler) processSSELine(
 	reasoningStarted *bool,
 	stopSent *bool,
 	toolUseCount *int,
+	toolBlocks map[int]int,
 	originalModel string,
 ) error {
 	line = strings.TrimSpace(line)
@@ -188,9 +204,7 @@ func (h *StreamHandler) processSSELine(
 		return nil
 	}
 
-	// Handle [DONE] marker
-	if data == "[DONE]" {
-	}
+	// Handle [DONE] marker — JSON parsing below silently skips it.
 
 	// Fast path: check if this is a content chunk without full JSON parsing.
 	// Skip the fast path when reasoning_content is also present in the same
@@ -257,11 +271,12 @@ func (h *StreamHandler) processSSELine(
 	if strings.Contains(data, `"finish_reason":`) &&
 		!strings.Contains(data, `"finish_reason":null`) &&
 		!strings.Contains(data, `"usage":`) {
-		// Close any open content block (reasoning or text)
+		// Close any open content block (reasoning or text).
 		if *contentStarted || *reasoningStarted {
+			closeIdx := *contentIndex - *toolUseCount
 			stopEvent := types.MessageEvent{
 				Type:  "content_block_stop",
-				Index: contentIndex,
+				Index: &closeIdx,
 			}
 			if err := writeSSEEvent(w, stopEvent); err != nil {
 				return ErrClientDisconnected
@@ -293,10 +308,15 @@ func (h *StreamHandler) processSSELine(
 	if len(chunk.Choices) == 0 {
 		if chunk.Usage != nil {
 			if *stopSent {
-				// Stop reason already sent — emit usage-only message_delta (no duplicate stop_reason).
+				// Stop reason already sent in a previous message_delta.
+				// Send this usage-only chunk but include stop_reason to
+				// prevent the empty delta from overwriting stop_reason as
+				// undefined on the client side (H.startsWith).
 				event := types.MessageEvent{
-					Type:  "message_delta",
-					Delta: &types.Delta{},
+					Type: "message_delta",
+					Delta: &types.Delta{
+						StopReason: "end_turn",
+					},
 					Usage: usageInfoToAnthropic(chunk.Usage),
 				}
 				if err := writeSSEEvent(w, event); err != nil {
@@ -400,28 +420,47 @@ func (h *StreamHandler) processSSELine(
 	// Handle tool call deltas
 	if len(choice.Delta.ToolCalls) > 0 {
 		for _, tc := range choice.Delta.ToolCalls {
-			*contentIndex++
-			*toolUseCount++
-
-			input := json.RawMessage(`{}`)
-			toolID := tc.ID
-			if toolID == "" {
-				toolID = fmt.Sprintf("toolu_%s", generateID())
-			}
-			startEvent := types.MessageEvent{
-				Type:  "content_block_start",
-				Index: contentIndex,
-				ContentBlock: &types.ContentBlock{
-					Type:  "tool_use",
-					ID:    toolID,
-					Name:  tc.Function.Name,
-					Input: input,
-				},
-			}
-			if err := writeSSEEvent(w, startEvent); err != nil {
-				return ErrClientDisconnected
+			tcIndex := 0
+			if tc.Index != nil {
+				tcIndex = *tc.Index
 			}
 
+			// OpenAI streaming sends tool calls in multiple chunks:
+			//   chunk 1: {index, id, function.name, function.arguments}
+			//   chunk 2+: {index, function.arguments} (no id/name)
+			// Only create a new content_block_start for the FIRST chunk of
+			// each tool call (when ID is present). Subsequent chunks update
+			// the existing block with input_json_delta.
+			blockIdx, exists := toolBlocks[tcIndex]
+
+			if tc.ID != "" || !exists {
+				// New tool call — create content_block_start
+				*contentIndex++
+				*toolUseCount++
+				toolBlocks[tcIndex] = *contentIndex
+
+				input := json.RawMessage(`{}`)
+				toolID := tc.ID
+				if toolID == "" {
+					toolID = fmt.Sprintf("toolu_%s", generateID())
+				}
+				startEvent := types.MessageEvent{
+					Type:  "content_block_start",
+					Index: contentIndex,
+					ContentBlock: &types.ContentBlock{
+						Type:  "tool_use",
+						ID:    toolID,
+						Name:  tc.Function.Name,
+						Input: input,
+					},
+				}
+				if err := writeSSEEvent(w, startEvent); err != nil {
+					return ErrClientDisconnected
+				}
+				blockIdx = *contentIndex
+			}
+
+			// Send input_json_delta if arguments are present
 			if tc.Function.Arguments != "" {
 				delta := types.Delta{
 					Type:        "input_json_delta",
@@ -429,7 +468,7 @@ func (h *StreamHandler) processSSELine(
 				}
 				event := types.MessageEvent{
 					Type:  "content_block_delta",
-					Index: contentIndex,
+					Index: &blockIdx,
 					Delta: &delta,
 				}
 				if err := writeSSEEvent(w, event); err != nil {
@@ -442,22 +481,25 @@ func (h *StreamHandler) processSSELine(
 
 	// Handle finish reason
 	if choice.FinishReason != "" {
-		// Close any open content block (reasoning or text)
+		// Close any open content block (reasoning or text).
+		// The text/reasoning block was started at index (contentIndex - toolUseCount);
+		// tool_use calls may have incremented contentIndex since then.
 		if *contentStarted || *reasoningStarted {
+			closeIdx := *contentIndex - *toolUseCount
 			stopEvent := types.MessageEvent{
 				Type:  "content_block_stop",
-				Index: contentIndex,
+				Index: &closeIdx,
 			}
 			if err := writeSSEEvent(w, stopEvent); err != nil {
 				return ErrClientDisconnected
 			}
 		}
 
-		// Close any open tool_use blocks. Each tool call incremented contentIndex,
-		// so we need to close all of them (not just the last one).
+		// Close any open tool_use blocks. Tool calls started at indices
+		// (contentIndex - toolUseCount + 1) through (contentIndex).
 		if *toolUseCount > 0 {
 			for i := 0; i < *toolUseCount; i++ {
-				idx := *contentIndex - *toolUseCount + i
+				idx := *contentIndex - *toolUseCount + i + 1
 				stopEvent := types.MessageEvent{
 					Type:  "content_block_stop",
 					Index: &idx,
