@@ -217,7 +217,7 @@ func (h *MessagesHandler) HandleMessages(w http.ResponseWriter, r *http.Request)
 	// Normalize the response model name so Claude Code's client-side provider
 	// routing can always match it. Claude Code maintains an internal provider
 	// table keyed by model name prefix; unrecognized names cause H.startsWith.
-	responseModel := normalizeResponseModel(anthropicReq.Model, routeResult.Primary.ModelID)
+	responseModel := h.normalizeResponseModel(anthropicReq.Model, routeResult.Primary.ModelID)
 
 	if isStreaming {
 		// Streaming: use ProxyStream for real-time SSE transformation
@@ -614,7 +614,10 @@ func hasOnlyToolResults(blocks []types.ContentBlock) bool {
 // response model name. Claude Code's provider routing table only recognizes
 // Anthropic model names; responding with any other name (e.g., deepseek-v4-pro)
 // causes H.startsWith errors.
-func normalizeResponseModel(requestModel, routedModel string) string {
+//
+// Falls back to DefaultResponseModel config value, or "claude-sonnet-4-6" if
+// neither is set.
+func (h *MessagesHandler) normalizeResponseModel(requestModel, routedModel string) string {
 	if requestModel == "" {
 		requestModel = routedModel
 	}
@@ -630,7 +633,11 @@ func normalizeResponseModel(requestModel, routedModel string) string {
 	if strings.Contains(lower, "opus") {
 		return "claude-opus-4-7"
 	}
-	// Default: sonnet covers the majority of coding requests
+	// Default: sonnet covers the majority of coding requests.
+	// Use configured default if set; otherwise use hardcoded sonnet.
+	if h.config.DefaultResponseModel != "" {
+		return h.config.DefaultResponseModel
+	}
 	return "claude-sonnet-4-6"
 }
 

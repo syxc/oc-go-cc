@@ -489,6 +489,393 @@ func TestProxyStream_ReasoningBeforeContentFastPathRegression(t *testing.T) {
 	}
 }
 
+func TestProxyStream_SafetyNetTextWithoutFinishReason(t *testing.T) {
+	handler := NewStreamHandler()
+	w := newMockResponseWriter()
+	// DeepSeek-style: content chunks end, then [DONE] without finish_reason.
+	body := sseLines(
+		`{"choices":[{"delta":{"content":"Hello"}}]}`,
+		`{"choices":[{"delta":{"content":" world"}}]}`,
+		`[DONE]`,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := handler.ProxyStream(w, body, "deepseek-v4-pro", ctx); err != nil {
+		t.Fatalf("ProxyStream error: %v", err)
+	}
+
+	events := parseSSEEvents(t, w.buf.String())
+
+	// message_start + content_block_start + 2x content_block_delta +
+	// content_block_stop (safety net) + message_delta (safety net) + message_stop = 7
+	if len(events) != 7 {
+		t.Fatalf("expected 7 events, got %d: %+v", len(events), events)
+	}
+
+	// Safety net content_block_stop
+	stopIdx := 5
+	if events[stopIdx-1].Type != "content_block_stop" {
+		t.Errorf("event[%d].Type = %q, want content_block_stop", stopIdx-1, events[stopIdx-1].Type)
+	}
+	// Safety net message_delta must carry stop_reason
+	deltaIdx := 5
+	if events[deltaIdx].Type != "message_delta" {
+		t.Errorf("event[%d].Type = %q, want message_delta", deltaIdx, events[deltaIdx].Type)
+	}
+	if events[deltaIdx].Delta == nil || events[deltaIdx].Delta.StopReason != "end_turn" {
+		t.Errorf("event[%d].Delta = %+v, want stop_reason=end_turn", deltaIdx, events[deltaIdx].Delta)
+	}
+	// message_stop at the end
+	if events[6].Type != "message_stop" {
+		t.Errorf("event[6].Type = %q, want message_stop", events[6].Type)
+	}
+}
+
+func TestProxyStream_SafetyNetToolUseWithoutFinishReason(t *testing.T) {
+	handler := NewStreamHandler()
+	w := newMockResponseWriter()
+	// Stream with text + tool_use, ending with [DONE] and no finish_reason.
+	body := sseLines(
+		`{"choices":[{"delta":{"content":"Let me read that file."}}]}`,
+		fmt.Sprintf(`{"choices":[{"delta":%s}]}`, mustJSON(t, types.ChatMessage{
+			ToolCalls: []types.ToolCall{
+				{ID: "call_123", Index: intPtr(0), Function: types.FunctionCall{
+					Name:      "read_file",
+					Arguments: `{"filePath":"/` + `tmp/test.go"}`,
+				}},
+			},
+		})),
+		`[DONE]`,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := handler.ProxyStream(w, body, "deepseek-v4-pro", ctx); err != nil {
+		t.Fatalf("ProxyStream error: %v", err)
+	}
+
+	events := parseSSEEvents(t, w.buf.String())
+
+	// message_start + content_block_start(text) + text_delta + content_block_start(tool) +
+	// input_json_delta + content_block_stop(text, safety net) +
+	// content_block_stop(tool, safety net) + message_delta(safety net) + message_stop = 9
+	if len(events) != 9 {
+		t.Fatalf("expected 9 events, got %d: %+v", len(events), events)
+	}
+
+	// Verify text block stop from safety net
+	if events[5].Type != "content_block_stop" || events[5].Index == nil || *events[5].Index != 0 {
+		t.Errorf("event[5] = %+v, want content_block_stop index=0", events[5])
+	}
+	// Verify tool_use block stop from safety net
+	if events[6].Type != "content_block_stop" || events[6].Index == nil || *events[6].Index != 1 {
+		t.Errorf("event[6] = %+v, want content_block_stop index=1", events[6])
+	}
+	// Safety net message_delta
+	if events[7].Type != "message_delta" || events[7].Delta == nil || events[7].Delta.StopReason != "end_turn" {
+		t.Errorf("event[7] = %+v, want message_delta with stop_reason=end_turn", events[7])
+	}
+	if events[8].Type != "message_stop" {
+		t.Errorf("event[8].Type = %q, want message_stop", events[8].Type)
+	}
+}
+
+func TestProxyStream_SafetyNetOnlyFiresWhenStopNotSent(t *testing.T) {
+	handler := NewStreamHandler()
+	w := newMockResponseWriter()
+	// Normal stream with finish_reason — safety net must NOT add duplicate events.
+	body := sseLines(
+		`{"choices":[{"delta":{"content":"Hello"}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := handler.ProxyStream(w, body, "deepseek-v4-pro", ctx); err != nil {
+		t.Fatalf("ProxyStream error: %v", err)
+	}
+
+	events := parseSSEEvents(t, w.buf.String())
+
+	// message_start + content_block_start + text_delta +
+	// content_block_stop (fast path) + message_delta (fast path) + message_stop = 6
+	if len(events) != 6 {
+		t.Fatalf("expected 6 events, got %d: %+v", len(events), events)
+	}
+}
+
+func TestProxyStream_ToolUseMultiChunkDedup(t *testing.T) {
+	handler := NewStreamHandler()
+	w := newMockResponseWriter()
+	// OpenAI-style multi-chunk tool call: chunk 1 has ID+Name+args,
+	// chunk 2 has only args (no ID). Dedup must NOT create duplicate blocks.
+	body := sseLines(
+		fmt.Sprintf(`{"choices":[{"delta":%s}]}`, mustJSON(t, types.ChatMessage{
+			ToolCalls: []types.ToolCall{
+				{ID: "call_abc", Index: intPtr(0), Function: types.FunctionCall{
+					Name:      "read_file",
+					Arguments: `{"filePath":"/` + `tmp/x.go"}`,
+				}},
+			},
+		})),
+		fmt.Sprintf(`{"choices":[{"delta":%s}]}`, mustJSON(t, types.ChatMessage{
+			ToolCalls: []types.ToolCall{
+				{Index: intPtr(0), Function: types.FunctionCall{
+					Arguments: `}` + `}`,
+				}},
+			},
+		})),
+		fmt.Sprintf(`{"choices":[{"delta":%s}]}`, mustJSON(t, types.ChatMessage{
+			ToolCalls: []types.ToolCall{
+				{Index: intPtr(0), Function: types.FunctionCall{
+					Arguments: `,` + `"mode":"r"}`,
+				}},
+			},
+		})),
+		`{"choices":[{"delta":{},"finish_reason":"stop","usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}]}`,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := handler.ProxyStream(w, body, "deepseek-v4-pro", ctx); err != nil {
+		t.Fatalf("ProxyStream error: %v", err)
+	}
+
+	events := parseSSEEvents(t, w.buf.String())
+
+	// message_start + content_block_start(tool) + 3x input_json_delta +
+	// content_block_stop(tool) + message_delta + message_stop = 8
+	if len(events) != 8 {
+		t.Fatalf("expected 8 events, got %d: %+v", len(events), events)
+	}
+
+	// Only one content_block_start for the tool
+	startCount := 0
+	for _, ev := range events {
+		if ev.Type == "content_block_start" && ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
+			startCount++
+		}
+	}
+	if startCount != 1 {
+		t.Fatalf("expected exactly 1 tool_use content_block_start, got %d", startCount)
+	}
+
+	// All tool deltas must be input_json_delta
+	for _, ev := range events {
+		if ev.Type == "content_block_delta" && ev.Delta != nil {
+			if ev.Delta.Type != "input_json_delta" {
+				t.Errorf("unexpected delta type %q, want input_json_delta", ev.Delta.Type)
+			}
+		}
+	}
+}
+
+func TestProxyStream_TwoToolCallsMultiChunkDedup(t *testing.T) {
+	handler := NewStreamHandler()
+	w := newMockResponseWriter()
+	// Two different tool calls (index 0 and 1), each arriving in multiple chunks.
+	body := sseLines(
+		// Tool A chunk 1: ID, name, partial args
+		fmt.Sprintf(`{"choices":[{"delta":%s}]}`, mustJSON(t, types.ChatMessage{
+			ToolCalls: []types.ToolCall{
+				{ID: "call_a", Index: intPtr(0), Function: types.FunctionCall{
+					Name:      "read_file",
+					Arguments: `{"f":"x"`,
+				}},
+			},
+		})),
+		// Tool A chunk 2: more args
+		fmt.Sprintf(`{"choices":[{"delta":%s}]}`, mustJSON(t, types.ChatMessage{
+			ToolCalls: []types.ToolCall{
+				{Index: intPtr(0), Function: types.FunctionCall{
+					Arguments: `}`,
+				}},
+			},
+		})),
+		// Tool B chunk 1: ID, name, partial args
+		fmt.Sprintf(`{"choices":[{"delta":%s}]}`, mustJSON(t, types.ChatMessage{
+			ToolCalls: []types.ToolCall{
+				{ID: "call_b", Index: intPtr(1), Function: types.FunctionCall{
+					Name:      "write_file",
+					Arguments: `{"f":"y"`,
+				}},
+			},
+		})),
+		// Tool B chunk 2: more args
+		fmt.Sprintf(`{"choices":[{"delta":%s}]}`, mustJSON(t, types.ChatMessage{
+			ToolCalls: []types.ToolCall{
+				{Index: intPtr(1), Function: types.FunctionCall{
+					Arguments: `}`,
+				}},
+			},
+		})),
+		`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := handler.ProxyStream(w, body, "deepseek-v4-pro", ctx); err != nil {
+		t.Fatalf("ProxyStream error: %v", err)
+	}
+
+	events := parseSSEEvents(t, w.buf.String())
+
+	// message_start + 2x content_block_start(tool A + tool B) +
+	// 4x input_json_delta (2 per tool) + 2x content_block_stop (A + B) +
+	// message_delta + message_stop = 11
+	if len(events) != 11 {
+		t.Fatalf("expected 11 events, got %d: %+v", len(events), events)
+	}
+
+	// Exactly 2 tool content_block_start events with correct names
+	var toolStarts []types.MessageEvent
+	for _, ev := range events {
+		if ev.Type == "content_block_start" && ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
+			toolStarts = append(toolStarts, ev)
+		}
+	}
+	if len(toolStarts) != 2 {
+		t.Fatalf("expected 2 tool_use content_block_start, got %d: %+v", len(toolStarts), toolStarts)
+	}
+	if toolStarts[0].ContentBlock.Name != "read_file" {
+		t.Errorf("tool A Name = %q, want read_file", toolStarts[0].ContentBlock.Name)
+	}
+	if toolStarts[1].ContentBlock.Name != "write_file" {
+		t.Errorf("tool B Name = %q, want write_file", toolStarts[1].ContentBlock.Name)
+	}
+}
+
+func TestProxyStream_ToolUseNilIndexDefaultsToZero(t *testing.T) {
+	handler := NewStreamHandler()
+	w := newMockResponseWriter()
+	// Tool call without explicit Index field — should default to 0.
+	body := sseLines(
+		fmt.Sprintf(`{"choices":[{"delta":%s}]}`, mustJSON(t, types.ChatMessage{
+			ToolCalls: []types.ToolCall{
+				{ID: "call_x", Function: types.FunctionCall{
+					Name:      "search",
+					Arguments: `{"q":"hello"}`,
+				}},
+			},
+		})),
+		// Second chunk for same tool call (no ID, no Index)
+		fmt.Sprintf(`{"choices":[{"delta":%s}]}`, mustJSON(t, types.ChatMessage{
+			ToolCalls: []types.ToolCall{
+				{Function: types.FunctionCall{
+					Arguments: `,` + `"limit":10}`,
+				}},
+			},
+		})),
+		`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := handler.ProxyStream(w, body, "deepseek-v4-pro", ctx); err != nil {
+		t.Fatalf("ProxyStream error: %v", err)
+	}
+
+	events := parseSSEEvents(t, w.buf.String())
+
+	// Only one content_block_start for the tool
+	startCount := 0
+	for _, ev := range events {
+		if ev.Type == "content_block_start" && ev.ContentBlock != nil && ev.ContentBlock.Type == "tool_use" {
+			startCount++
+		}
+	}
+	if startCount != 1 {
+		t.Fatalf("expected exactly 1 tool_use content_block_start, got %d", startCount)
+	}
+}
+
+func TestProxyStream_ContentFastPathUnescapeValid(t *testing.T) {
+	handler := NewStreamHandler()
+	w := newMockResponseWriter()
+	// Valid JSON escape sequences: \n, \t, \\, \" should be unescaped correctly.
+	body := sseLines(
+		`{"choices":[{"delta":{"content":"Hello\nWorld"}}]}`,
+		`{"choices":[{"delta":{"content":"\tIndented"}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := handler.ProxyStream(w, body, "deepseek-v4-pro", ctx); err != nil {
+		t.Fatalf("ProxyStream error: %v", err)
+	}
+
+	events := parseSSEEvents(t, w.buf.String())
+
+	// Find text deltas
+	var texts []string
+	for _, ev := range events {
+		if ev.Type == "content_block_delta" && ev.Delta != nil && ev.Delta.Type == "text_delta" {
+			texts = append(texts, ev.Delta.Text)
+		}
+	}
+	if len(texts) != 2 {
+		t.Fatalf("expected 2 text_delta events, got %d: %q", len(texts), texts)
+	}
+
+	// \n should be actual newline, not literal \n
+	if texts[0] != "Hello\nWorld" {
+		t.Errorf("text[0] = %q, want %q", texts[0], "Hello\nWorld")
+	}
+	if texts[1] != "\tIndented" {
+		t.Errorf("text[1] = %q, want %q", texts[1], "\tIndented")
+	}
+}
+
+func TestProxyStream_ContentFastPathMalformedEscapeFallback(t *testing.T) {
+	handler := NewStreamHandler()
+	w := newMockResponseWriter()
+	// Malformed escape sequence \z — unescape fails, falls back to raw string.
+	body := sseLines(
+		`{"choices":[{"delta":{"content":"Hello\\zWorld"}}]}`,
+		`{"choices":[{"delta":{"content":" more"}}]}`,
+		`{"choices":[{"delta":{},"finish_reason":"stop"}]}`,
+	)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := handler.ProxyStream(w, body, "deepseek-v4-pro", ctx); err != nil {
+		t.Fatalf("ProxyStream error: %v", err)
+	}
+
+	events := parseSSEEvents(t, w.buf.String())
+
+	// Must have at least message_start, content_block_start, 2x delta, stop, message_delta, message_stop
+	if len(events) < 6 {
+		t.Fatalf("expected at least 6 events, got %d: %+v", len(events), events)
+	}
+
+	// First text delta should contain the raw content (fallback path)
+	var texts []string
+	for _, ev := range events {
+		if ev.Type == "content_block_delta" && ev.Delta != nil && ev.Delta.Type == "text_delta" {
+			texts = append(texts, ev.Delta.Text)
+		}
+	}
+	if len(texts) != 2 {
+		t.Fatalf("expected 2 text_delta events, got %d: %q", len(texts), texts)
+	}
+
+	// Falls back to raw string; \x remains literal
+	if !strings.Contains(texts[0], `\z`) {
+		t.Errorf("text[0] = %q, expected literal \\z fallback", texts[0])
+	}
+}
+
 // helpers
 
 func mustJSON(t *testing.T, v any) string {
@@ -500,4 +887,5 @@ func mustJSON(t *testing.T, v any) string {
 	return string(b)
 }
 
-func strPtr(s string) *string { return &s }
+func strPtr(s string) *string  { return &s }
+func intPtr(i int) *int        { return &i }

@@ -9,6 +9,7 @@ type Config struct {
 	Host                           string                   `json:"host"`
 	Port                           int                      `json:"port"`
 	EnableStreamingScenarioRouting bool                     `json:"enable_streaming_scenario_routing"`
+	DefaultResponseModel           string                   `json:"default_response_model"`
 	Models                         map[string]ModelConfig   `json:"models"`
 	Fallbacks                      map[string][]ModelConfig `json:"fallbacks"`
 	OpenCodeGo                     OpenCodeGoConfig         `json:"opencode_go"`

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -127,28 +128,8 @@ func (h *StreamHandler) ProxyStream(
 	// message_delta with stop_reason so the client receives a complete
 	// Anthropic event sequence.
 	if !stopSent {
-		if contentStarted || reasoningStarted {
-			closeIdx := contentIndex - toolUseCount
-			cbStop := types.MessageEvent{
-				Type:  "content_block_stop",
-				Index: &closeIdx,
-			}
-			if err := writeSSEEvent(w, cbStop); err != nil {
-				return ErrClientDisconnected
-			}
-		}
-		if toolUseCount > 0 {
-			for i := 0; i < toolUseCount; i++ {
-				idx := contentIndex - toolUseCount + i + 1
-				cbStop := types.MessageEvent{
-					Type:  "content_block_stop",
-					Index: &idx,
-				}
-				if err := writeSSEEvent(w, cbStop); err != nil {
-					return ErrClientDisconnected
-				}
-			}
-			toolUseCount = 0
+		if err := closeOpenContentBlocks(w, contentIndex, contentStarted, reasoningStarted, &toolUseCount); err != nil {
+			return err
 		}
 		msgDelta := types.MessageEvent{
 			Type: "message_delta",
@@ -171,6 +152,36 @@ func (h *StreamHandler) ProxyStream(
 	}
 	flusher.Flush()
 
+	return nil
+}
+
+// closeOpenContentBlocks sends content_block_stop for any open text, reasoning,
+// or tool_use blocks. Used by all three finish paths (fast-path, JSON-path, safety-net)
+// to avoid duplicated index calculation logic. Resets toolUseCount to 0.
+func closeOpenContentBlocks(w http.ResponseWriter, contentIndex int, contentStarted bool, reasoningStarted bool, toolUseCount *int) error {
+	if contentStarted || reasoningStarted {
+		closeIdx := contentIndex - *toolUseCount
+		cbStop := types.MessageEvent{
+			Type:  "content_block_stop",
+			Index: &closeIdx,
+		}
+		if err := writeSSEEvent(w, cbStop); err != nil {
+			return ErrClientDisconnected
+		}
+	}
+	if *toolUseCount > 0 {
+		for i := 0; i < *toolUseCount; i++ {
+			idx := contentIndex - *toolUseCount + i + 1
+			cbStop := types.MessageEvent{
+				Type:  "content_block_stop",
+				Index: &idx,
+			}
+			if err := writeSSEEvent(w, cbStop); err != nil {
+				return ErrClientDisconnected
+			}
+		}
+		*toolUseCount = 0
+	}
 	return nil
 }
 
@@ -227,7 +238,9 @@ func (h *StreamHandler) processSSELine(
 					// strconv.Unquote requires surrounding double quotes
 					unquoted, err := strconv.Unquote(`"` + s + `"`)
 					if err != nil {
-						// Fallback: return raw if unquote fails (e.g., malformed)
+						slog.Warn("unescape failed, passing raw content (double-escape risk)",
+							"error", err,
+							"content_preview", s[:min(len(s), 50)])
 						return s
 					}
 					return unquoted
@@ -253,7 +266,7 @@ func (h *StreamHandler) processSSELine(
 						startEvent := types.MessageEvent{
 							Type:         "content_block_start",
 							Index:        contentIndex,
-							ContentBlock: &types.ContentBlock{Type: "text", Text: ""},
+							ContentBlock: &types.ContentBlock{Type: "text"},
 						}
 						if err := writeSSEEvent(w, startEvent); err != nil {
 							return ErrClientDisconnected
@@ -286,32 +299,9 @@ func (h *StreamHandler) processSSELine(
 	if strings.Contains(data, `"finish_reason":`) &&
 		!strings.Contains(data, `"finish_reason":null`) &&
 		!strings.Contains(data, `"usage":`) {
-		// Close any open content block (reasoning or text).
-		if *contentStarted || *reasoningStarted {
-			closeIdx := *contentIndex - *toolUseCount
-			stopEvent := types.MessageEvent{
-				Type:  "content_block_stop",
-				Index: &closeIdx,
-			}
-			if err := writeSSEEvent(w, stopEvent); err != nil {
-				return ErrClientDisconnected
-			}
-		}
-
-		// Close any open tool_use blocks. Tool calls started at indices
-		// (contentIndex - toolUseCount + 1) through (contentIndex).
-		if *toolUseCount > 0 {
-			for i := 0; i < *toolUseCount; i++ {
-				idx := *contentIndex - *toolUseCount + i + 1
-				stopEvent := types.MessageEvent{
-					Type:  "content_block_stop",
-					Index: &idx,
-				}
-				if err := writeSSEEvent(w, stopEvent); err != nil {
-					return ErrClientDisconnected
-				}
-			}
-			*toolUseCount = 0
+		// Close any open content block (reasoning, text, or tool_use).
+		if err := closeOpenContentBlocks(w, *contentIndex, *contentStarted, *reasoningStarted, toolUseCount); err != nil {
+			return err
 		}
 
 		// Send message_delta with stop_reason
@@ -385,7 +375,7 @@ func (h *StreamHandler) processSSELine(
 			startEvent := types.MessageEvent{
 				Type:         "content_block_start",
 				Index:        contentIndex,
-				ContentBlock: &types.ContentBlock{Type: "thinking", Thinking: ""},
+				ContentBlock: &types.ContentBlock{Type: "thinking"},
 			}
 			if err := writeSSEEvent(w, startEvent); err != nil {
 				return ErrClientDisconnected
@@ -512,34 +502,9 @@ func (h *StreamHandler) processSSELine(
 
 	// Handle finish reason
 	if choice.FinishReason != "" {
-		// Close any open content block (reasoning or text).
-		// The text/reasoning block was started at index (contentIndex - toolUseCount);
-		// tool_use calls may have incremented contentIndex since then.
-		if *contentStarted || *reasoningStarted {
-			closeIdx := *contentIndex - *toolUseCount
-			stopEvent := types.MessageEvent{
-				Type:  "content_block_stop",
-				Index: &closeIdx,
-			}
-			if err := writeSSEEvent(w, stopEvent); err != nil {
-				return ErrClientDisconnected
-			}
-		}
-
-		// Close any open tool_use blocks. Tool calls started at indices
-		// (contentIndex - toolUseCount + 1) through (contentIndex).
-		if *toolUseCount > 0 {
-			for i := 0; i < *toolUseCount; i++ {
-				idx := *contentIndex - *toolUseCount + i + 1
-				stopEvent := types.MessageEvent{
-					Type:  "content_block_stop",
-					Index: &idx,
-				}
-				if err := writeSSEEvent(w, stopEvent); err != nil {
-					return ErrClientDisconnected
-				}
-			}
-			*toolUseCount = 0
+		// Close any open content block (reasoning, text, or tool_use).
+		if err := closeOpenContentBlocks(w, *contentIndex, *contentStarted, *reasoningStarted, toolUseCount); err != nil {
+			return err
 		}
 
 		msgDelta := types.MessageEvent{
