@@ -242,3 +242,54 @@ finish_reason fast path 缺少 tool_use 块关闭逻辑。与 JSON 解析路径�
 | 文件 | 变更 |
 |------|------|
 | `internal/transformer/stream.go` | finish_reason fast path 增加 tool_use block 关闭（`*toolUseCount > 0` 遍历关闭） |
+
+---
+
+# Fix Round 5: fast path JSON 字符串反转义
+
+- **Branch**: `fix/stream-stability`
+- **Date**: 2026-05-03
+
+## 现象
+
+流式输出中换行、制表符显示为 `\n`、`\t` 字面量，而非实际换行/缩进。
+
+## 根因
+
+fast path 从 raw SSE data 用字符串匹配提取 content，得到的是 JSON 编码后的转义序列（`\n` 是两个字符 `\` + `n`）。`json.Marshal` 再次编码时变成 `\\n`，double-escape。
+
+## 修复
+
+提取 content 后用 `strconv.Unquote` 反转义再传给 Delta struct。
+
+## 变更文件
+
+| 文件 | 变更 |
+|------|------|
+| `internal/transformer/stream.go` | fast path 增加 `unescapeJSONString`（`strconv.Unquote`） |
+
+---
+
+# Fix Round 6: WriteTimeout 导致间歇性 InvalidHTTPResponse
+
+- **Branch**: `fix/stream-stability`
+- **Date**: 2026-05-04
+
+## 现象
+
+正常交互时偶尔出现 `API Error: InvalidHTTPResponse fetching "http://127.0.0.1:3456/v1/messages?beta=true"`，不造成不可用，重试即可恢复。
+
+## 根因
+
+`http.Server.WriteTimeout: 5m` 对所有请求生效。流式 SSE 请求超过 5 分钟时 Go 在 response 层面强断连接（TCP RST），Claude Code 读到不完整的 HTTP 响应。
+
+## 修复
+
+`handleStreaming` 中用 `http.ResponseController.SetWriteDeadline(time.Time{})` 取消单次请求的 write deadline，非流式请求保留 5 分钟超时。
+
+## 变更文件
+
+| 文件 | 变更 |
+|------|------|
+| `internal/handlers/messages.go` | `handleStreaming` 增加 `rc.SetWriteDeadline(time.Time{})` |
+| `internal/server/server.go` | 注释说明 WriteTimeout 与 streaming 的关系 |
