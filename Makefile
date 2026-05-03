@@ -1,4 +1,4 @@
-.PHONY: build run test clean install dist lint vet
+.PHONY: build run test clean install dist lint vet redeploy
 
 # Build variables
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -34,6 +34,10 @@ install: build
 	cp bin/$(BINARY) $(GOPATH)/bin/$(BINARY) 2>/dev/null || \
 		cp bin/$(BINARY) $(HOME)/go/bin/$(BINARY) 2>/dev/null || \
 		go install -ldflags "$(LDFLAGS)" $(CMD)
+
+# Build, install, stop old process, start new daemon, health check.
+redeploy:
+	@bash scripts/redeploy.sh
 
 # ── Release / Cross-Compilation ────────────────────────────────────
 

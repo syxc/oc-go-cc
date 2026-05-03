@@ -242,6 +242,13 @@ func (h *MessagesHandler) handleStreaming(
 	// the original context gets canceled and kills all fallbacks.
 	clientCtx := r.Context()
 
+	// Streaming responses can last much longer than the server's WriteTimeout.
+	// Cancel the per-request write deadline so Go doesn't RST the connection
+	// mid-stream — this was causing intermittent InvalidHTTPResponse on the
+	// Claude Code side.
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Time{})
+
 	rw := &responseWriter{ResponseWriter: w}
 
 	// Set SSE headers immediately so Claude Code knows the stream is alive.

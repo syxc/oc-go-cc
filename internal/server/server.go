@@ -73,6 +73,9 @@ func NewServer(cfg *config.Config) (*Server, error) {
 		ReadTimeout:  30 * time.Second,
 		WriteTimeout: 5 * time.Minute,
 		IdleTimeout:  120 * time.Second,
+		// Streaming requests can last much longer than WriteTimeout.
+		// The handler uses ResponseController.SetWriteDeadline to extend
+		// or cancel the write deadline on a per-request basis.
 	}
 
 	return &Server{
