@@ -293,3 +293,55 @@ fast path 从 raw SSE data 用字符串匹配提取 content，得到的是 JSON 
 |------|------|
 | `internal/handlers/messages.go` | `handleStreaming` 增加 `rc.SetWriteDeadline(time.Time{})` |
 | `internal/server/server.go` | 注释说明 WriteTimeout 与 streaming 的关系 |
+
+---
+
+# Appendix: `[1m]` suffix 路由机制分析
+
+- **Date**: 2026-05-04
+
+## 结论
+
+无需额外代码修改，当前实现已能正确处理所有 `[1m]` 变体。
+
+## 机制
+
+`[1m]` / `[long-context]` / `[long_context]` suffix 是通用的场景选择器，不绑定特定模型。
+
+**解析**（`model_router.go:165-188`）：`model[1m]` → `(base="model", scenario="long_context")`
+
+**路由**（`model_router.go:82-110`）：
+
+```
+1. 匹配环境变量（ANTHROPIC_MODEL / ANTHROPIC_DEFAULT_*_MODEL / CLAUDE_CODE_SUBAGENT_MODEL）
+2. scenario = "long_context"
+3. template = config.Models["long_context"]
+4. resolved = template
+5. resolved.ModelID = base（用户指定的模型名，不被覆盖）
+6. fallbacks = config.Fallbacks["long_context"]
+```
+
+**参数传递**（`transformer/request.go:70-103`）：
+
+- `Temperature`、`MaxTokens`：来自 `long_context` template，作为模型级 override
+- `Thinking`、`ReasoningEffort`：template 没配时走默认值（`"enabled"` + `"high"`），确保 DeepSeek 系列始终正确
+- History 有 thinking blocks → 必须发 thinking 参数
+- History 无 thinking blocks → config 配了则发 `disabled`，否则不发
+
+## 支持的环境变量
+
+| 环境变量 | 默认 scenario | `[1m]` 后 scenario |
+|---|---|---|
+| `ANTHROPIC_MODEL` | `default` | `long_context` |
+| `ANTHROPIC_DEFAULT_HAIKU_MODEL` | `background` | `long_context` |
+| `ANTHROPIC_DEFAULT_SONNET_MODEL` | `default` | `long_context` |
+| `ANTHROPIC_DEFAULT_OPUS_MODEL` | `complex` | `long_context` |
+| `CLAUDE_CODE_SUBAGENT_MODEL` | `background` | `long_context` |
+
+## 兜底机制
+
+`[1m]` 使 model_id 和 `long_context` template 的参数可能不匹配（如 deepseek-v4-flash 拿到 minimax 的 temperature/max_tokens）。三层保护：
+
+1. **`TransformRequest` 有默认值**：thinking 参数未配置时默认 `"enabled"` + `"high"`，DeepSeek 始终能正确工作
+2. **上游忽略不认识的参数**：如 minimax 不认识 `reasoning_effort`，API 层面静默忽略
+3. **fallback 链接管**：上游因不支持的参数报错时，fallback 链自动切换到下一个模型
