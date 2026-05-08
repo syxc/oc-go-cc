@@ -71,10 +71,12 @@ type ModelInfo struct {
 // is unreachable.
 func (c *OpenCodeClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
 	// Derive the models list URL from the chat completions base URL.
-	// base_url is typically "https://host/v1/chat/completions" — strip the last two segments.
+	// base_url is typically "https://host/v1/chat/completions" — strip two path segments.
 	modelsURL := strings.TrimRight(c.openAIConfig.BaseURL, "/")
-	if idx := strings.LastIndex(modelsURL, "/"); idx != -1 {
-		modelsURL = modelsURL[:idx] // strip "/chat/completions" → "/v1"
+	for i := 0; i < 2; i++ {
+		if idx := strings.LastIndex(modelsURL, "/"); idx != -1 {
+			modelsURL = modelsURL[:idx]
+		}
 	}
 	modelsURL += "/models"
 
