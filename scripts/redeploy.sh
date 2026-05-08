@@ -32,8 +32,9 @@ pkill -f "$BINPATH" 2>/dev/null || true
 sleep 1
 
 # ── Step 2: Build & Install ──
-echo "[2/5] Building $CMD..."
-go install "$CMD"
+VERSION="$(git describe --tags --always --dirty 2>/dev/null || echo "dev")"
+echo "[2/5] Building $CMD (version: $VERSION)..."
+go install -ldflags "-X main.version=$VERSION" "$CMD"
 
 # ── Step 3: Codesign (macOS) ──
 if [[ "$(uname)" == "Darwin" ]]; then
