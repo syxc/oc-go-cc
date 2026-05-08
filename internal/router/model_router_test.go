@@ -171,3 +171,29 @@ func TestFindModelByID_UsesClaudeCodeSubagentMappingWithoutExplicitModelConfig(t
 		t.Fatalf("MaxTokens = %d, want %d", model.MaxTokens, 2048)
 	}
 }
+
+func TestFindModelByID_UsesClaudeCodeEnvMappingForReasoning(t *testing.T) {
+	t.Setenv("ANTHROPIC_REASONING_MODEL", "glm-5-plus")
+
+	router := NewModelRouter(&config.Config{
+		Models: map[string]config.ModelConfig{
+			"think": {
+				ModelID:         "glm-5",
+				Temperature:     0.5,
+				MaxTokens:       4096,
+				ReasoningEffort: "high",
+			},
+		},
+	})
+
+	model, _, ok := router.FindModelByID("glm-5-plus")
+	if !ok {
+		t.Fatal("FindModelByID() = not found, want found")
+	}
+	if model.ModelID != "glm-5-plus" {
+		t.Fatalf("ModelID = %q, want %q", model.ModelID, "glm-5-plus")
+	}
+	if model.ReasoningEffort != "high" {
+		t.Fatalf("ReasoningEffort = %q, want %q", model.ReasoningEffort, "high")
+	}
+}

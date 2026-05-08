@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/syxc/oc-go-cc/internal/config"
@@ -59,19 +60,59 @@ func NewOpenCodeClient(cfg config.OpenCodeGoConfig, apiKey string) *OpenCodeClie
 	}
 }
 
-// IsAnthropicModel returns true if the model requires the Anthropic endpoint.
-func IsAnthropicModel(modelID string) bool {
-	switch modelID {
-	case "minimax-m2.5", "minimax-m2.7":
-		return true
-	default:
-		return false
+// ModelInfo holds metadata for a single model returned by the upstream API.
+type ModelInfo struct {
+	ID    string `json:"id"`
+	Owned string `json:"owned_by,omitempty"`
+}
+
+// ListModels queries the upstream /v1/models endpoint and returns the available models.
+// It uses the OpenAI base URL; callers should fall back gracefully if the endpoint
+// is unreachable.
+func (c *OpenCodeClient) ListModels(ctx context.Context) ([]ModelInfo, error) {
+	// Derive the models list URL from the chat completions base URL.
+	// base_url is typically "https://host/v1/chat/completions" — strip the last two segments.
+	modelsURL := strings.TrimRight(c.openAIConfig.BaseURL, "/")
+	if idx := strings.LastIndex(modelsURL, "/"); idx != -1 {
+		modelsURL = modelsURL[:idx] // strip "/chat/completions" → "/v1"
 	}
+	modelsURL += "/models"
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, modelsURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create models request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+c.openAIConfig.APIKey)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("models request failed: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("models request returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Data []ModelInfo `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode models response: %w", err)
+	}
+	return result.Data, nil
+}
+
+// IsAnthropicModel is an alias kept for backward compatibility with external callers.
+// Prefer config.IsLegacyAnthropicModel or ModelConfig.ShouldForwardRaw().
+func IsAnthropicModel(modelID string) bool {
+	return config.IsLegacyAnthropicModel(modelID)
 }
 
 // getEndpoint returns the appropriate endpoint config for a model.
 func (c *OpenCodeClient) getEndpoint(modelID string) EndpointConfig {
-	if IsAnthropicModel(modelID) {
+	if config.IsLegacyAnthropicModel(modelID) {
 		return c.anthropicConfig
 	}
 	return c.openAIConfig

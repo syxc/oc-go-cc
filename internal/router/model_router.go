@@ -146,6 +146,7 @@ func claudeCodeEnvMappings() []struct {
 		{EnvName: "ANTHROPIC_DEFAULT_SONNET_MODEL", Scenario: "default"},
 		{EnvName: "ANTHROPIC_DEFAULT_OPUS_MODEL", Scenario: "complex"},
 		{EnvName: "CLAUDE_CODE_SUBAGENT_MODEL", Scenario: "background"},
+		{EnvName: "ANTHROPIC_REASONING_MODEL", Scenario: "think"},
 	}
 }
 

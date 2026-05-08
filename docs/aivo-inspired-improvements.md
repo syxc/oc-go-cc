@@ -221,9 +221,27 @@ oc-go-cc models --verify # 验证模型 ID 是否在 OpenCode Go 上可用
 
 | Phase | 风险等级 | 原因 |
 |-------|---------|------|
-| Phase 1 | ✅ 低 | 只添加一行映射，逻辑隔离 |
-| Phase 2 | ⚠️ 中 | 涉及 5 个文件，需要向后兼容处理 |
+| Phase 1 | ✅ 低 | 只添加一行映射，逻辑隔离 — **已完成** |
+| Phase 2 | ✅ 低 | 4 文件改动，向后兼容 — **已完成** |
 | Phase 3 | ✅ 低 | 纯增量功能，不影响现有路径 |
+
+---
+
+## 实施进度
+
+| Phase | 状态 | Commit |
+|-------|------|--------|
+| Phase 1: `ANTHROPIC_REASONING_MODEL` 映射 | ✅ Done | `model_router.go` +1 行 |
+| Phase 2: `ModelConfig.Endpoint` 替代 `IsAnthropicModel()` | ✅ Done | config/opencode/messages 3 文件 |
+| Phase 3: 模型列表验证 | ⏳ Not started | 可选 |
+
+### Phase 2 实现细节
+
+- `config.ModelConfig` 新增 `Endpoint` 字段（`"anthropic"` / `"openai"` / `""` 自动检测）
+- `ModelConfig.ShouldForwardRaw()` 方法根据 Endpoint 决定直传 vs 转换
+- `config.IsLegacyAnthropicModel()` 承载旧逻辑，空 Endpoint 时自动 fallback
+- `client.IsAnthropicModel()` 保留为兼容 alias，委托到 config 包
+- `messages.go` 的 `client.IsAnthropicModel(model.ModelID)` 全部替换为 `model.ShouldForwardRaw()`
 
 ---
 

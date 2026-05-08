@@ -311,7 +311,7 @@ func (h *MessagesHandler) handleStreaming(
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 
 		// Check if this is an Anthropic-native model (MiniMax)
-		if client.IsAnthropicModel(model.ModelID) {
+		if model.ShouldForwardRaw() {
 			// For MiniMax models, send raw Anthropic request to Anthropic endpoint
 			// But we need to replace the model name in the raw body
 			modelBody := replaceModelInRawBody(rawBody, model.ModelID)
@@ -501,7 +501,7 @@ func (h *MessagesHandler) handleNonStreaming(
 		modelChain,
 		func(ctx context.Context, model config.ModelConfig) ([]byte, error) {
 			// Check if this is an Anthropic-native model (MiniMax)
-			if client.IsAnthropicModel(model.ModelID) {
+			if model.ShouldForwardRaw() {
 				return h.executeAnthropicRequest(ctx, rawBody, model)
 			}
 			// Otherwise use OpenAI transformation

@@ -2,11 +2,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"time"
 
 	"github.com/spf13/cobra"
+	opencodeclient "github.com/syxc/oc-go-cc/internal/client"
 	"github.com/syxc/oc-go-cc/internal/config"
 	"github.com/syxc/oc-go-cc/internal/daemon"
 	"github.com/syxc/oc-go-cc/internal/server"
@@ -254,34 +258,129 @@ func validateCmd() *cobra.Command {
 	return cmd
 }
 
-// modelsCmd returns the command to list available models.
+// modelsCmd returns the command to list and validate models.
+// It queries the upstream /v1/models endpoint and cross-references with
+// the local config to surface missing or unused models.
 func modelsCmd() *cobra.Command {
-	return &cobra.Command{
+	var configPath string
+
+	cmd := &cobra.Command{
 		Use:   "models",
-		Short: "List available OpenCode Go models",
-		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("Available OpenCode Go models:")
+		Short: "List and validate configured models against upstream",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if configPath != "" {
+				_ = os.Setenv("OC_GO_CC_CONFIG", configPath)
+			}
+
+			cfg, err := config.Load()
+			if err != nil {
+				return fmt.Errorf("failed to load config: %w", err)
+			}
+
+			// Collect all model IDs referenced in config (primary + fallbacks).
+			configModels := collectConfigModelIDs(cfg)
+
+			// Query upstream.
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+
+			client := opencodeclient.NewOpenCodeClient(cfg.OpenCodeGo, cfg.APIKey)
+			upstream, err := client.ListModels(ctx)
+			if err != nil {
+				fmt.Printf("Warning: could not fetch upstream models (%v)\n", err)
+				fmt.Println("Showing config-only view:")
+				fmt.Println()
+				printConfigModels(configModels)
+				return nil
+			}
+
+			// Build lookup set.
+			upstreamSet := make(map[string]bool, len(upstream))
+			for _, m := range upstream {
+				upstreamSet[m.ID] = true
+			}
+
+			fmt.Printf("Upstream models: %d available\n", len(upstream))
 			fmt.Println()
-			fmt.Println("  Model ID           Endpoint Type")
+
+			// Cross-reference.
+			fmt.Println("  Config model              Status")
 			fmt.Println("  ─────────────────────────────────────────")
-			fmt.Println("  glm-5.1            OpenAI-compatible")
-			fmt.Println("  glm-5              OpenAI-compatible")
-			fmt.Println("  kimi-k2.6          OpenAI-compatible")
-			fmt.Println("  kimi-k2.5          OpenAI-compatible")
-			fmt.Println("  mimo-v2.5-pro      OpenAI-compatible")
-			fmt.Println("  mimo-v2.5          OpenAI-compatible")
-			fmt.Println("  mimo-v2-pro        OpenAI-compatible")
-			fmt.Println("  mimo-v2-omni       OpenAI-compatible")
-			fmt.Println("  minimax-m2.7       Anthropic-compatible")
-			fmt.Println("  minimax-m2.5       Anthropic-compatible")
-			fmt.Println("  deepseek-v4-pro    OpenAI-compatible")
-			fmt.Println("  deepseek-v4-flash  OpenAI-compatible")
-			fmt.Println("  qwen3.6-plus       OpenAI-compatible")
-			fmt.Println("  qwen3.5-plus       OpenAI-compatible")
-			fmt.Println()
-			fmt.Println("Use these model IDs in your config.json file.")
+			for _, id := range sortedKeys(configModels) {
+				if upstreamSet[id] {
+					fmt.Printf("  %-26s ✅ available\n", id)
+				} else {
+					fmt.Printf("  %-26s ❌ not found upstream\n", id)
+				}
+			}
+
+			// Show unused upstream models.
+			configSet := make(map[string]bool, len(configModels))
+			for _, id := range configModels {
+				configSet[id] = true
+			}
+
+			var unused []string
+			for _, m := range upstream {
+				if !configSet[m.ID] {
+					unused = append(unused, m.ID)
+				}
+			}
+			if len(unused) > 0 {
+				sort.Strings(unused)
+				fmt.Println()
+				fmt.Println("  Unused upstream models (not in config):")
+				for _, id := range unused {
+					fmt.Printf("    • %s\n", id)
+				}
+			}
+
+			return nil
 		},
 	}
+
+	cmd.Flags().StringVarP(&configPath, "config", "c", "", "Path to config file")
+	return cmd
+}
+
+// collectConfigModelIDs returns a deduplicated list of all model IDs referenced in config.
+func collectConfigModelIDs(cfg *config.Config) []string {
+	seen := make(map[string]bool)
+	add := func(id string) {
+		if id != "" {
+			seen[id] = true
+		}
+	}
+	for _, m := range cfg.Models {
+		add(m.ModelID)
+	}
+	for _, fallbacks := range cfg.Fallbacks {
+		for _, m := range fallbacks {
+			add(m.ModelID)
+		}
+	}
+	var result []string
+	for id := range seen {
+		result = append(result, id)
+	}
+	sort.Strings(result)
+	return result
+}
+
+// printConfigModels prints config models when upstream is unreachable.
+func printConfigModels(models []string) {
+	fmt.Println("  Model ID")
+	fmt.Println("  ─────────────────────────────────────────")
+	for _, id := range models {
+		fmt.Printf("  %s\n", id)
+	}
+	fmt.Println()
+	fmt.Println("(Could not reach upstream to validate availability.)")
+}
+
+// sortedKeys returns the keys of a string slice (already sorted).
+func sortedKeys(keys []string) []string {
+	return keys
 }
 
 // getConfigDir returns the default configuration directory path.
